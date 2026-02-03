@@ -1,32 +1,57 @@
 ﻿# Instagram Place to Maps
 
-將 Instagram 美食 Reels、貼文中的餐廳/景點資訊自動擷取，同步至 Google Sheets 並生成 Google Maps 連結，打造個人美食地圖。
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Telegram Bot](https://img.shields.io/badge/Telegram-Bot-26A5E4?logo=telegram)](https://core.telegram.org/bots)
+
+將 Instagram 美食 Reels、貼文中的餐廳/景點資訊自動擷取，同步至 Google Sheets 並儲存至 Google Maps 清單，打造個人美食地圖。
 
 ## 功能特色
 
-- 🎬 **多格式支援** — Reels、貼文（圖片/影片）、IGTV、分享連結
-- 🎙️ **語音轉文字** — 使用 Faster Whisper 本地轉錄
-- 👁️ **視覺分析** — MiniCPM-V 辨識招牌、菜單、環境
-- 🧠 **智慧擷取** — Qwen2.5 LLM 結構化地點資訊
-- 📍 **地點驗證** — Google Places API 取得地址、評分、評論數
-- 📊 **雲端同步** — 自動寫入 Google Sheets，可連動 My Maps
-- �️ **自動儲存** — Playwright 自動化將地點加入 Google Maps 清單
-- �💾 **本地儲存** — SQLite 資料庫保存完整記錄
-- 🤖 **Telegram Bot** — Webhook 模式即時互動
+| 功能 | 說明 |
+|------|------|
+| 🎬 **多格式支援** | Reels、貼文（圖片/影片）、IGTV、分享連結 |
+| 🎙️ **語音轉文字** | 使用 Faster Whisper 本地轉錄 |
+| 👁️ **視覺分析** | MiniCPM-V 辨識招牌、菜單、環境 |
+| 🧠 **智慧擷取** | Qwen2.5 LLM 結構化地點資訊 |
+| 📍 **地點驗證** | Google Places API 取得地址、評分、評論數 |
+| 📊 **雲端同步** | 自動寫入 Google Sheets，可連動 My Maps |
+| 🗺️ **自動儲存** | Playwright 自動化將地點加入 Google Maps 清單 |
+| 💾 **本地儲存** | SQLite 資料庫保存完整記錄 |
+| 🤖 **Telegram Bot** | Webhook 模式即時互動 |
 
 ## 運作流程
 
+```mermaid
+flowchart TD
+    A[📱 IG 連結] --> B[📥 下載內容]
+    B --> C{內容類型}
+    C -->|影片| D[🎙️ Whisper 語音轉文字]
+    C -->|圖片| E[📸 擷取貼文說明]
+    D --> F[👁️ MiniCPM-V 視覺分析]
+    E --> F
+    F --> G[🧠 Qwen2.5 LLM 擷取]
+    G --> H[📍 Google Places API]
+    H --> I[🗺️ Playwright 自動儲存]
+    I --> J[💬 Telegram 回覆]
+    I --> K[📊 Google Sheets]
+    I --> L[💾 SQLite 資料庫]
+```
+
+<details>
+<summary>ASCII 流程圖</summary>
+
 ```
 ┌─────────────┐
-│  IG 連結     │  Reel / 貼文 / IGTV / 分享連結
+│  IG 連結    │  Reel / 貼文 / IGTV / 分享連結
 └──────┬──────┘
        ▼
 ┌─────────────┐
-│  下載內容    │  yt-dlp (影片) / instaloader (圖片)
+│  下載內容   │  yt-dlp（影片）/ instaloader（圖片）
 └──────┬──────┘
        ▼
 ┌──────┴──────┐
-│  分析處理    │
+│  分析處理   │
 │  ┌────────┐ │
 │  │Whisper │ │  語音 → 文字
 │  └────────┘ │
@@ -36,7 +61,7 @@
 └──────┬──────┘
        ▼
 ┌─────────────┐
-│  LLM 擷取   │  Qwen2.5 → 結構化地點資訊
+│ LLM 擷取   │  Qwen2.5 → 結構化地點資訊
 └──────┬──────┘
        ▼
 ┌─────────────┐
@@ -48,7 +73,7 @@
 └──────┬──────┘
        ▼
 ┌──────┴──────┐
-│   輸出       │
+│   輸出      │
 │  ┌────────┐ │
 │  │Telegram│ │  即時回覆 + Maps 連結
 │  └────────┘ │
@@ -61,14 +86,18 @@
 └─────────────┘
 ```
 
+</details>
+
 ## 系統需求
+
+### 基本需求
 
 | 類別 | 需求 |
 |------|------|
-| Python | 3.10+ |
-| OS | Windows / macOS / Linux |
-| Ollama | 本地運行 Qwen2.5 + MiniCPM-V |
-| FFmpeg | 影片處理（Whisper 需要） |
+| **Python** | 3.10 或更高版本 |
+| **作業系統** | Windows / macOS / Linux |
+| **Ollama** | 本地運行 Qwen2.5 + MiniCPM-V |
+| **FFmpeg** | Whisper 音訊處理所需 |
 
 ### API 與帳號
 
@@ -93,6 +122,7 @@ cd instagram-place-to-maps
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+playwright install chromium
 ```
 
 ### 3. 設定環境變數
@@ -102,7 +132,7 @@ Copy-Item .env.example .env
 notepad .env
 ```
 
-### 4. 準備 Ollama 模型
+### 4. 下載 Ollama 模型
 
 ```powershell
 ollama pull qwen2.5:7b
@@ -118,7 +148,7 @@ ollama pull minicpm-v
 uvicorn app.main:app --port 8001 --reload
 ```
 
-### 6. 設定 Webhook（可選）
+### 6.（可選）設定 Webhook
 
 ```powershell
 # 使用 Cloudflare Tunnel
@@ -138,8 +168,8 @@ cloudflared tunnel --url http://localhost:8001
 
 | 變數 | 說明 | 預設值 |
 |------|------|--------|
-| `WHISPER_MODEL_SIZE` | Whisper 模型大小 | `base` |
-| `WHISPER_DEVICE` | 運算裝置 | `cpu` |
+| `WHISPER_MODEL_SIZE` | Whisper 模型大小（`tiny`、`base`、`small`、`medium`、`large`） | `base` |
+| `WHISPER_DEVICE` | 運算裝置（`cpu` 或 `cuda`） | `cpu` |
 | `OLLAMA_HOST` | Ollama 服務位址 | `http://localhost:11434` |
 | `OLLAMA_MODEL` | 文字 LLM 模型 | `qwen2.5:7b` |
 | `OLLAMA_VISION_MODEL` | 視覺 LLM 模型 | `minicpm-v` |
@@ -149,10 +179,10 @@ cloudflared tunnel --url http://localhost:8001
 | 變數 | 說明 |
 |------|------|
 | `GOOGLE_PLACES_API_KEY` | Google Places API Key |
-| `WEBHOOK_URL` | Webhook 網址 |
-| `GOOGLE_SERVICE_ACCOUNT_FILE` | Service Account JSON 路徑 |
+| `WEBHOOK_URL` | Telegram Webhook 網址 |
+| `GOOGLE_SERVICE_ACCOUNT_FILE` | Service Account JSON 檔案路徑 |
 | `GOOGLE_SHEETS_ID` | 目標 Spreadsheet ID |
-| `GOOGLE_MAPS_SAVE_ENABLED` | 啟用 Playwright 自動儲存至 Maps 清單 |
+| `GOOGLE_MAPS_SAVE_ENABLED` | 啟用 Playwright 自動儲存至 Maps 清單（`true`/`false`） |
 | `GOOGLE_MAPS_DEFAULT_LIST` | 預設儲存清單名稱（如「想去」） |
 | `PLAYWRIGHT_STATE_PATH` | 瀏覽器狀態儲存路徑 |
 | `PLAYWRIGHT_DELAY_MIN` | 自動化最小延遲（秒） |
@@ -160,11 +190,13 @@ cloudflared tunnel --url http://localhost:8001
 
 ## 使用方式
 
+### 基本操作
+
 1. 在 Telegram 找到你的 Bot
 2. 傳送 `/start` 開始
 3. 貼上 Instagram 連結（Reel、貼文、IGTV 皆可）
 4. 等待分析結果（約 1-3 分鐘）
-5. 點擊 Google Maps 連結加入你的清單
+5. 地點將自動儲存至你的 Google Maps 清單
 
 ### 支援的連結格式
 
@@ -176,7 +208,7 @@ cloudflared tunnel --url http://localhost:8001
 | IGTV | `instagram.com/tv/xxx` |
 | 分享連結 | `instagram.com/share/xxx` |
 
-## Bot 指令
+### Bot 指令
 
 | 指令 | 說明 |
 |------|------|
@@ -192,27 +224,28 @@ cloudflared tunnel --url http://localhost:8001
 ```
 instagram-place-to-maps/
 ├── app/
-│   ├── config.py              # 環境變數設定
-│   ├── main.py                # FastAPI + Webhook
+│   ├── config.py                # 環境變數設定
+│   ├── main.py                  # FastAPI + Webhook 進入點
 │   ├── bot/
-│   │   └── handlers.py        # Telegram Bot 處理器
+│   │   └── handlers.py          # Telegram Bot 處理器
 │   ├── database/
-│   │   └── models.py          # SQLAlchemy 資料模型
+│   │   └── models.py            # SQLAlchemy 資料模型
 │   ├── services/
-│   │   ├── downloader.py      # 影片/圖片下載
-│   │   ├── transcriber.py     # 語音轉文字
-│   │   ├── visual_analyzer.py # 視覺分析
-│   │   ├── place_extractor.py # LLM 地點擷取
-│   │   ├── google_places.py   # Places API
-│   │   ├── google_sheets.py   # Sheets 同步
-│   │   └── google_maps_saver.py # Maps 自動儲存
-│   └── prompts/               # LLM Prompt 模板
-├── browser_state/             # Playwright 瀏覽器狀態
-├── temp_videos/               # 暫存下載檔案
-├── credentials.json           # Google Service Account
-├── cookies.txt                # Instagram Cookies
-├── start.ps1                  # PowerShell 啟動腳本
-└── start.bat                  # Windows 啟動腳本
+│   │   ├── downloader.py        # 影片/圖片下載
+│   │   ├── transcriber.py       # 語音轉文字（Whisper）
+│   │   ├── visual_analyzer.py   # 視覺分析（MiniCPM-V）
+│   │   ├── place_extractor.py   # LLM 地點擷取（Qwen）
+│   │   ├── google_places.py     # Google Places API
+│   │   ├── google_sheets.py     # Sheets 同步
+│   │   └── google_maps_saver.py # Maps 自動儲存（Playwright）
+│   └── prompts/                 # LLM Prompt 模板
+├── browser_state/               # Playwright 瀏覽器狀態
+├── docs/                        # 文件
+├── temp_videos/                 # 暫存下載檔案
+├── credentials.json             # Google Service Account
+├── cookies.txt                  # Instagram Cookies
+├── start.ps1                    # PowerShell 啟動腳本
+└── start.bat                    # Windows 啟動腳本
 ```
 
 ## 資料儲存
@@ -245,32 +278,51 @@ instagram-place-to-maps/
 
 ## 常見問題
 
-### 影片下載失敗
+<details>
+<summary><strong>影片下載失敗</strong></summary>
 
 - 確認 `cookies.txt` 有效且格式正確
 - Instagram 可能需要登入才能存取內容
+- 嘗試從瀏覽器重新匯出 cookies
 
-### Whisper 轉錄緩慢
+</details>
+
+<details>
+<summary><strong>Whisper 轉錄緩慢</strong></summary>
 
 - 使用 `tiny` 或 `base` 模型加速
 - 若有 GPU，設定 `WHISPER_DEVICE=cuda`
+- 確認 FFmpeg 已正確安裝
 
-### Google Places 找不到地點
+</details>
+
+<details>
+<summary><strong>Google Places 找不到地點</strong></summary>
 
 - 確認 API Key 已啟用 Places API (New)
 - 嘗試更精確的店名或加上城市名稱
+- 在 Google Cloud Console 檢查 API 配額
 
-### Ollama 連線失敗
+</details>
+
+<details>
+<summary><strong>Ollama 連線失敗</strong></summary>
 
 - 確認 Ollama 服務已啟動：`ollama serve`
 - 檢查模型已下載：`ollama list`
+- 確認 `OLLAMA_HOST` 設定正確
 
-### Playwright 自動儲存失敗
+</details>
+
+<details>
+<summary><strong>Playwright 自動儲存失敗</strong></summary>
 
 - 執行 `/setup_google` 重新登入
 - 檢查 `browser_state/google_auth.json` 是否存在
 - 確認 Playwright 已安裝瀏覽器：`playwright install chromium`
 - Google 帳戶可能需要重新驗證（定期過期）
+
+</details>
 
 ## 開發路線
 
@@ -285,9 +337,19 @@ instagram-place-to-maps/
 - [ ] 重複地點偵測
 - [ ] 依城市/類型分類瀏覽
 
+## 貢獻
+
+歡迎貢獻！請隨時提交 Pull Request。
+
+1. Fork 此專案
+2. 建立功能分支（`git checkout -b feature/amazing-feature`）
+3. 提交變更（`git commit -m 'Add some amazing feature'`）
+4. 推送至分支（`git push origin feature/amazing-feature`）
+5. 開啟 Pull Request
+
 ## 授權
 
-MIT License
+本專案採用 MIT 授權條款 - 詳見 [LICENSE](LICENSE) 檔案。
 
 ## 致謝
 
@@ -297,3 +359,5 @@ MIT License
 - [Ollama](https://ollama.ai) — 本地 LLM 運行
 - [Playwright](https://playwright.dev) — 瀏覽器自動化
 - [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) — Telegram Bot API
+- [FastAPI](https://fastapi.tiangolo.com) — 現代 Python 網頁框架
+- [gspread](https://github.com/burnash/gspread) — Google Sheets Python API

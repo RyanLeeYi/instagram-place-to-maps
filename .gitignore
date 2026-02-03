@@ -35,4 +35,5 @@ instaloader_session/
 # OS
 .DS_Store
 Thumbs.db
-doc/
+docs/
+.github/
