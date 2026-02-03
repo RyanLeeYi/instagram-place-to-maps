@@ -1,51 +1,110 @@
-﻿# Instagram Food to Maps   
+﻿# Instagram Place to Maps
 
-將 Instagram 美食 Reels 自動擷取餐廳資訊，並提供 Google Maps 連結。
+將 Instagram 美食 Reels、貼文中的餐廳/景點資訊自動擷取，同步至 Google Sheets 並生成 Google Maps 連結，打造個人美食地圖。
 
-## 功能
+## 功能特色
 
--  下載 Instagram Reels 影片
--  語音轉文字 (Whisper)
--  畫面視覺分析 (MiniCPM-V)
--  智慧擷取店家資訊 (Qwen2.5)
--  Google Maps 地點搜尋
--  本地資料庫儲存
+- 🎬 **多格式支援** — Reels、貼文（圖片/影片）、IGTV、分享連結
+- 🎙️ **語音轉文字** — 使用 Faster Whisper 本地轉錄
+- 👁️ **視覺分析** — MiniCPM-V 辨識招牌、菜單、環境
+- 🧠 **智慧擷取** — Qwen2.5 LLM 結構化地點資訊
+- 📍 **地點驗證** — Google Places API 取得地址、評分、評論數
+- 📊 **雲端同步** — 自動寫入 Google Sheets，可連動 My Maps
+- 💾 **本地儲存** — SQLite 資料庫保存完整記錄
+- 🤖 **Telegram Bot** — Webhook 模式即時互動
+
+## 運作流程
+
+```
+┌─────────────┐
+│  IG 連結     │  Reel / 貼文 / IGTV / 分享連結
+└──────┬──────┘
+       ▼
+┌─────────────┐
+│  下載內容    │  yt-dlp (影片) / instaloader (圖片)
+└──────┬──────┘
+       ▼
+┌──────┴──────┐
+│  分析處理    │
+│  ┌────────┐ │
+│  │Whisper │ │  語音 → 文字
+│  └────────┘ │
+│  ┌────────┐ │
+│  │MiniCPM │ │  畫面 → 描述
+│  └────────┘ │
+└──────┬──────┘
+       ▼
+┌─────────────┐
+│  LLM 擷取   │  Qwen2.5 → 結構化地點資訊
+└──────┬──────┘
+       ▼
+┌─────────────┐
+│ Places API  │  搜尋驗證 → 地址、評分、座標
+└──────┬──────┘
+       ▼
+┌──────┴──────┐
+│   輸出       │
+│  ┌────────┐ │
+│  │Telegram│ │  即時回覆 + Maps 連結
+│  └────────┘ │
+│  ┌────────┐ │
+│  │Sheets  │ │  雲端同步
+│  └────────┘ │
+│  ┌────────┐ │
+│  │SQLite  │ │  本地儲存
+│  └────────┘ │
+└─────────────┘
+```
+
+## 系統需求
+
+| 類別 | 需求 |
+|------|------|
+| Python | 3.10+ |
+| OS | Windows / macOS / Linux |
+| Ollama | 本地運行 Qwen2.5 + MiniCPM-V |
+| FFmpeg | 影片處理（Whisper 需要） |
+
+### API 與帳號
+
+| 服務 | 用途 | 必要性 |
+|------|------|--------|
+| Telegram Bot Token | Bot 互動 | ✅ 必要 |
+| Google Places API | 地點搜尋驗證 | ⚡ 建議 |
+| Google Service Account | Sheets 同步 | 📋 可選 |
 
 ## 快速開始
 
-### 1. 環境設定
+### 1. 複製專案
 
 ```powershell
-# 複製專案
-cd instagram-food-to-maps
+git clone https://github.com/user/instagram-place-to-maps.git
+cd instagram-place-to-maps
+```
 
-# 建立虛擬環境
+### 2. 建立虛擬環境
+
+```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-
-# 安裝依賴
 pip install -r requirements.txt
 ```
 
-### 2. 設定環境變數
+### 3. 設定環境變數
 
 ```powershell
-# 複製範例檔案
-cp .env.example .env
-
-# 編輯 .env
+Copy-Item .env.example .env
 notepad .env
 ```
 
-**必要設定：**
-- `TELEGRAM_BOT_TOKEN` - 從 @BotFather 取得
-- `TELEGRAM_ALLOWED_CHAT_IDS` - 你的 Chat ID
+### 4. 準備 Ollama 模型
 
-**可選設定：**
-- `GOOGLE_PLACES_API_KEY` - Google Places API Key（可取得精確地點資訊）
-- `WEBHOOK_URL` - Webhook 網址（例如：https://food.yourdomain.com）
+```powershell
+ollama pull qwen2.5:7b
+ollama pull minicpm-v
+```
 
-### 3. 啟動
+### 5. 啟動服務
 
 ```powershell
 .\start.ps1
@@ -54,23 +113,59 @@ notepad .env
 uvicorn app.main:app --port 8001 --reload
 ```
 
-### 4. 設定 Tunnel（如使用 Webhook）
+### 6. 設定 Webhook（可選）
 
 ```powershell
-# 如果有自訂域名
-cloudflared tunnel run my-projects
-
-# 或使用臨時 tunnel
+# 使用 Cloudflare Tunnel
 cloudflared tunnel --url http://localhost:8001
 ```
+
+## 環境變數
+
+### 必要設定
+
+| 變數 | 說明 | 範例 |
+|------|------|------|
+| `TELEGRAM_BOT_TOKEN` | 從 @BotFather 取得 | `123456:ABC...` |
+| `TELEGRAM_ALLOWED_CHAT_IDS` | 允許的 Chat ID（逗號分隔） | `123456789` |
+
+### 模型設定
+
+| 變數 | 說明 | 預設值 |
+|------|------|--------|
+| `WHISPER_MODEL_SIZE` | Whisper 模型大小 | `base` |
+| `WHISPER_DEVICE` | 運算裝置 | `cpu` |
+| `OLLAMA_HOST` | Ollama 服務位址 | `http://localhost:11434` |
+| `OLLAMA_MODEL` | 文字 LLM 模型 | `qwen2.5:7b` |
+| `OLLAMA_VISION_MODEL` | 視覺 LLM 模型 | `minicpm-v` |
+
+### 可選設定
+
+| 變數 | 說明 |
+|------|------|
+| `GOOGLE_PLACES_API_KEY` | Google Places API Key |
+| `WEBHOOK_URL` | Webhook 網址 |
+| `GOOGLE_SERVICE_ACCOUNT_FILE` | Service Account JSON 路徑 |
+| `GOOGLE_SHEETS_ID` | 目標 Spreadsheet ID |
+| `GOOGLE_MAPS_SAVE_ENABLED` | 啟用自動儲存至 Maps 清單 |
 
 ## 使用方式
 
 1. 在 Telegram 找到你的 Bot
 2. 傳送 `/start` 開始
-3. 貼上 Instagram 美食 Reels 連結
-4. 等待分析結果
+3. 貼上 Instagram 連結（Reel、貼文、IGTV 皆可）
+4. 等待分析結果（約 1-3 分鐘）
 5. 點擊 Google Maps 連結加入你的清單
+
+### 支援的連結格式
+
+| 類型 | URL 格式 |
+|------|----------|
+| Reel | `instagram.com/reel/xxx` |
+| Reels | `instagram.com/reels/xxx` |
+| 貼文 | `instagram.com/p/xxx` |
+| IGTV | `instagram.com/tv/xxx` |
+| 分享連結 | `instagram.com/share/xxx` |
 
 ## Bot 指令
 
@@ -83,70 +178,90 @@ cloudflared tunnel --url http://localhost:8001
 ## 專案結構
 
 ```
-instagram-food-to-maps/
- app/
-    __init__.py
-    config.py              # 設定檔
-    main.py                # FastAPI 主程式
-    bot/
-       handlers.py        # Telegram Bot 處理器
-    database/
-       models.py          # 資料庫模型
-    services/
-        downloader.py      # 影片下載
-        transcriber.py     # 語音轉文字
-        visual_analyzer.py # 視覺分析
-        food_extractor.py  # 美食資訊擷取
-        google_places.py   # Google Places API
- .env.example
- requirements.txt
- start.ps1
+instagram-place-to-maps/
+├── app/
+│   ├── config.py              # 環境變數設定
+│   ├── main.py                # FastAPI + Webhook
+│   ├── bot/
+│   │   └── handlers.py        # Telegram Bot 處理器
+│   ├── database/
+│   │   └── models.py          # SQLAlchemy 資料模型
+│   ├── services/
+│   │   ├── downloader.py      # 影片/圖片下載
+│   │   ├── transcriber.py     # 語音轉文字
+│   │   ├── visual_analyzer.py # 視覺分析
+│   │   ├── place_extractor.py # LLM 地點擷取
+│   │   ├── google_places.py   # Places API
+│   │   ├── google_sheets.py   # Sheets 同步
+│   │   └── google_maps_saver.py # Maps 自動儲存
+│   └── prompts/               # LLM Prompt 模板
+├── browser_state/             # Playwright 瀏覽器狀態
+├── temp_videos/               # 暫存下載檔案
+├── credentials.json           # Google Service Account
+├── cookies.txt                # Instagram Cookies
+├── start.ps1                  # PowerShell 啟動腳本
+└── start.bat                  # Windows 啟動腳本
 ```
 
-## 技術架構
+## 資料儲存
 
-```
-IG Reels URL
-    
-    
+### SQLite 資料庫
 
-  Downloader  yt-dlp
+自動建立 `food_places.db`，儲存欄位包括：
 
-    
-    
-                      
-  
- Transcriber     Visual     
-  (Whisper)      Analyzer   
-  
-                      
-    
-             
-    
-     Food Extractor   Qwen2.5 LLM
-     (店家資訊擷取)   
-    
-             
-             
-    
-     Google Places   
-     (地點搜尋驗證)   
-    
-             
-             
-    
-     Telegram Reply  
-     + Google Maps   
-    
-```
+- 地點名稱（中/英文）
+- 城市、國家、類型
+- Google Place ID、Maps 連結
+- 評分、評論數
+- 原始語音/視覺分析結果
+- 來源 Instagram URL
 
-## 注意事項
+### Google Sheets 同步
 
-- 處理時間約 1-3 分鐘（取決於影片長度）
-- 辨識準確度取決於影片中店家資訊的清晰度
-- 建議使用有明確店名的美食介紹影片
-- Google Places API 有免費額度限制
+設定 Service Account 後自動同步至指定 Spreadsheet，可連動 Google My Maps 顯示地圖。
 
-## 相關專案
+## 常見問題
 
-- [instagram-reels-summarizer](../instagram-reels-summarizer) - IG Reels 摘要筆記工具
+### 影片下載失敗
+
+- 確認 `cookies.txt` 有效且格式正確
+- Instagram 可能需要登入才能存取內容
+
+### Whisper 轉錄緩慢
+
+- 使用 `tiny` 或 `base` 模型加速
+- 若有 GPU，設定 `WHISPER_DEVICE=cuda`
+
+### Google Places 找不到地點
+
+- 確認 API Key 已啟用 Places API (New)
+- 嘗試更精確的店名或加上城市名稱
+
+### Ollama 連線失敗
+
+- 確認 Ollama 服務已啟動：`ollama serve`
+- 檢查模型已下載：`ollama list`
+
+## 開發路線
+
+- [x] 支援 Reel / 貼文 / IGTV / 分享連結
+- [x] 語音轉文字 + 視覺分析
+- [x] Google Places API 整合
+- [x] Google Sheets 同步
+- [x] 訊息去重防止重複處理
+- [ ] 批次處理多個連結
+- [ ] KML 匯出（Google Earth）
+- [ ] 重複地點偵測
+- [ ] 依城市/類型分類瀏覽
+
+## 授權
+
+MIT License
+
+## 致謝
+
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — 影片下載
+- [instaloader](https://github.com/instaloader/instaloader) — Instagram 貼文下載
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) — 語音轉文字
+- [Ollama](https://ollama.ai) — 本地 LLM 運行
+- [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) — Telegram Bot API
