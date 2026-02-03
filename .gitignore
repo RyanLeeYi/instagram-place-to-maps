@@ -1,0 +1,37 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+
+# Database
+*.db
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# Temp
+temp_videos/
+*.mp4
+*.mp3
+
+# Cookies
+cookies.txt
+
+# Google/Instagram auth artifacts
+credentials.json
+browser_state/
+instaloader_session/
+
+# OS
+.DS_Store
+Thumbs.db

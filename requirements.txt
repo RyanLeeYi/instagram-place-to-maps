@@ -1,0 +1,39 @@
+﻿# Telegram Bot
+python-telegram-bot[webhooks]==22.6
+
+# Web Framework
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+
+# Database
+sqlalchemy[asyncio]==2.0.32
+aiosqlite==0.20.0
+
+# Video Download
+yt-dlp==2024.8.6
+instaloader>=4.15
+
+# AI/ML - Whisper
+faster-whisper>=1.0.3
+
+# Ollama Client
+ollama==0.3.3
+
+# Configuration
+pydantic==2.8.2
+pydantic-settings==2.4.0
+
+# Google Places API
+googlemaps==4.10.0
+aiohttp>=3.9.5
+
+# Google Sheets
+gspread>=6.0.0
+google-auth>=2.0.0
+
+# Utilities
+python-dotenv==1.0.1
+httpx==0.27.0
+
+# Browser Automation
+playwright>=1.40.0
