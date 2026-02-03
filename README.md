@@ -10,7 +10,8 @@
 - 🧠 **智慧擷取** — Qwen2.5 LLM 結構化地點資訊
 - 📍 **地點驗證** — Google Places API 取得地址、評分、評論數
 - 📊 **雲端同步** — 自動寫入 Google Sheets，可連動 My Maps
-- 💾 **本地儲存** — SQLite 資料庫保存完整記錄
+- �️ **自動儲存** — Playwright 自動化將地點加入 Google Maps 清單
+- �💾 **本地儲存** — SQLite 資料庫保存完整記錄
 - 🤖 **Telegram Bot** — Webhook 模式即時互動
 
 ## 運作流程
@@ -40,6 +41,10 @@
        ▼
 ┌─────────────┐
 │ Places API  │  搜尋驗證 → 地址、評分、座標
+└──────┬──────┘
+       ▼
+┌─────────────┐
+│ Playwright  │  自動儲存至 Google Maps 清單
 └──────┬──────┘
        ▼
 ┌──────┴──────┐
@@ -147,7 +152,11 @@ cloudflared tunnel --url http://localhost:8001
 | `WEBHOOK_URL` | Webhook 網址 |
 | `GOOGLE_SERVICE_ACCOUNT_FILE` | Service Account JSON 路徑 |
 | `GOOGLE_SHEETS_ID` | 目標 Spreadsheet ID |
-| `GOOGLE_MAPS_SAVE_ENABLED` | 啟用自動儲存至 Maps 清單 |
+| `GOOGLE_MAPS_SAVE_ENABLED` | 啟用 Playwright 自動儲存至 Maps 清單 |
+| `GOOGLE_MAPS_DEFAULT_LIST` | 預設儲存清單名稱（如「想去」） |
+| `PLAYWRIGHT_STATE_PATH` | 瀏覽器狀態儲存路徑 |
+| `PLAYWRIGHT_DELAY_MIN` | 自動化最小延遲（秒） |
+| `PLAYWRIGHT_DELAY_MAX` | 自動化最大延遲（秒） |
 
 ## 使用方式
 
@@ -174,6 +183,9 @@ cloudflared tunnel --url http://localhost:8001
 | `/start` | 顯示歡迎訊息 |
 | `/help` | 使用說明 |
 | `/list` | 查看已儲存的地點 |
+| `/setup_google` | 設定 Google 帳戶登入（Playwright 自動儲存用） |
+| `/google_lists` | 查看 Google Maps 清單 |
+| `/set_list <名稱>` | 設定預設儲存清單 |
 
 ## 專案結構
 
@@ -220,6 +232,17 @@ instagram-place-to-maps/
 
 設定 Service Account 後自動同步至指定 Spreadsheet，可連動 Google My Maps 顯示地圖。
 
+### Playwright 自動儲存
+
+透過 Playwright 瀏覽器自動化，將地點直接加入你的 Google Maps「想去」清單：
+
+1. **首次設定**：在 Telegram 執行 `/setup_google`，會開啟瀏覽器讓你登入 Google
+2. **登入後**：系統自動儲存 cookies 至 `browser_state/google_auth.json`
+3. **後續使用**：分析完成後自動以 headless 模式儲存地點
+4. **切換清單**：使用 `/set_list 清單名稱` 變更目標清單
+
+> ⚠️ 此功能使用瀏覽器自動化，請適度使用避免觸發 Google 安全機制
+
 ## 常見問題
 
 ### 影片下載失敗
@@ -242,6 +265,13 @@ instagram-place-to-maps/
 - 確認 Ollama 服務已啟動：`ollama serve`
 - 檢查模型已下載：`ollama list`
 
+### Playwright 自動儲存失敗
+
+- 執行 `/setup_google` 重新登入
+- 檢查 `browser_state/google_auth.json` 是否存在
+- 確認 Playwright 已安裝瀏覽器：`playwright install chromium`
+- Google 帳戶可能需要重新驗證（定期過期）
+
 ## 開發路線
 
 - [x] 支援 Reel / 貼文 / IGTV / 分享連結
@@ -249,6 +279,7 @@ instagram-place-to-maps/
 - [x] Google Places API 整合
 - [x] Google Sheets 同步
 - [x] 訊息去重防止重複處理
+- [x] Playwright 自動儲存至 Google Maps 清單
 - [ ] 批次處理多個連結
 - [ ] KML 匯出（Google Earth）
 - [ ] 重複地點偵測
@@ -264,4 +295,5 @@ MIT License
 - [instaloader](https://github.com/instaloader/instaloader) — Instagram 貼文下載
 - [faster-whisper](https://github.com/SYSTRAN/faster-whisper) — 語音轉文字
 - [Ollama](https://ollama.ai) — 本地 LLM 運行
+- [Playwright](https://playwright.dev) — 瀏覽器自動化
 - [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) — Telegram Bot API
