@@ -15,6 +15,8 @@ from telegram.ext import (
     filters,
 )
 
+from telegram.error import TimedOut, NetworkError
+
 from app.config import settings
 from app.database.models import init_db
 from app.bot.handlers import PlaceBotHandlers
@@ -41,6 +43,22 @@ logger = logging.getLogger(__name__)
 # Telegram Bot 應用程式
 bot_app: Application = None
 handlers: PlaceBotHandlers = None
+
+
+async def error_handler(update: object, context) -> None:
+    """
+    處理 Telegram Bot 的錯誤
+    
+    針對網路超時等暫時性錯誤進行記錄，避免重複處理
+    """
+    error = context.error
+    
+    if isinstance(error, TimedOut):
+        logger.warning(f"Telegram API 超時: {error}")
+    elif isinstance(error, NetworkError):
+        logger.warning(f"網路錯誤: {error}")
+    else:
+        logger.error(f"處理更新時發生錯誤: {error}", exc_info=context.error)
 
 
 @asynccontextmanager
@@ -77,6 +95,9 @@ async def lifespan(app: FastAPI):
         filters.TEXT & ~filters.COMMAND,
         handlers.message_handler
     ))
+    
+    # 註冊錯誤處理器
+    bot_app.add_error_handler(error_handler)
     
     await bot_app.initialize()
     

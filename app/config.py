@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     database_url: str = Field(
         default="sqlite+aiosqlite:///./food_places.db", env="DATABASE_URL"
     )
-    
+
     # Google Maps 自動儲存設定
     google_maps_save_enabled: bool = Field(default=False, env="GOOGLE_MAPS_SAVE_ENABLED")
     google_maps_default_list: str = Field(default="想去", env="GOOGLE_MAPS_DEFAULT_LIST")

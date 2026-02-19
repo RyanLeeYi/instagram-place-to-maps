@@ -4,13 +4,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Telegram Bot](https://img.shields.io/badge/Telegram-Bot-26A5E4?logo=telegram)](https://core.telegram.org/bots)
 
-將 Instagram 美食 Reels、貼文中的餐廳/景點資訊自動擷取，同步至 Google Sheets 並儲存至 Google Maps 清單，打造個人美食地圖。
+將 Instagram / Threads 美食 Reels、貼文、串文中的餐廳/景點資訊自動擷取，同步至 Google Sheets 並儲存至 Google Maps 清單，打造個人美食地圖。
 
 ## 功能特色
 
 | 功能 | 說明 |
 |------|------|
-| 🎬 **多格式支援** | Reels、貼文（圖片/影片）、IGTV、分享連結 |
+| 🎬 **多格式支援** | Instagram Reels、貼文、IGTV、分享連結；Threads 貼文、串文（thread chain） |
 | 🎙️ **語音轉文字** | 使用 Faster Whisper 本地轉錄 |
 | 👁️ **視覺分析** | MiniCPM-V 辨識招牌、菜單、環境 |
 | 🧠 **智慧擷取** | Qwen2.5 LLM 結構化地點資訊 |
@@ -24,12 +24,16 @@
 
 ```mermaid
 flowchart TD
-    A[📱 IG 連結] --> B[📥 下載內容]
+    A[📱 IG / Threads 連結] --> B[📥 下載內容]
     B --> C{內容類型}
     C -->|影片| D[🎙️ Whisper 語音轉文字]
     C -->|圖片| E[📸 擷取貼文說明]
+    C -->|串文混合| M[🔗 圖片 + 影片並行分析]
+    C -->|純文字| N[📝 直接擷取地點]
     D --> F[👁️ MiniCPM-V 視覺分析]
     E --> F
+    M --> G
+    N --> G
     F --> G[🧠 Qwen2.5 LLM 擷取]
     G --> H[📍 Google Places API]
     H --> I[🗺️ Playwright 自動儲存]
@@ -194,19 +198,22 @@ cloudflared tunnel --url http://localhost:8001
 
 1. 在 Telegram 找到你的 Bot
 2. 傳送 `/start` 開始
-3. 貼上 Instagram 連結（Reel、貼文、IGTV 皆可）
+3. 貼上 Instagram 或 Threads 連結
 4. 等待分析結果（約 1-3 分鐘）
 5. 地點將自動儲存至你的 Google Maps 清單
 
 ### 支援的連結格式
 
-| 類型 | URL 格式 |
-|------|----------|
-| Reel | `instagram.com/reel/xxx` |
-| Reels | `instagram.com/reels/xxx` |
-| 貼文 | `instagram.com/p/xxx` |
-| IGTV | `instagram.com/tv/xxx` |
-| 分享連結 | `instagram.com/share/xxx` |
+| 平台 | 類型 | URL 格式 |
+|------|------|----------|
+| Instagram | Reel | `instagram.com/reel/xxx` |
+| Instagram | Reels | `instagram.com/reels/xxx` |
+| Instagram | 貼文 | `instagram.com/p/xxx` |
+| Instagram | IGTV | `instagram.com/tv/xxx` |
+| Instagram | 分享連結 | `instagram.com/share/xxx` |
+| Threads | 貼文/串文 | `threads.net/@user/post/xxx` |
+| Threads | 貼文/串文 | `threads.com/@user/post/xxx` |
+| Threads | 短連結 | `threads.net/t/xxx` |
 
 ### Bot 指令
 
@@ -326,7 +333,9 @@ instagram-place-to-maps/
 
 ## 開發路線
 
-- [x] 支援 Reel / 貼文 / IGTV / 分享連結
+- [x] 支援 Instagram Reel / 貼文 / IGTV / 分享連結
+- [x] 支援 Threads 貼文（圖片、影片、輪播、純文字）
+- [x] 支援 Threads 串文（thread chain）— 自動合併同作者的連續貼文
 - [x] 語音轉文字 + 視覺分析
 - [x] Google Places API 整合
 - [x] Google Sheets 同步

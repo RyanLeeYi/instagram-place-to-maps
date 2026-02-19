@@ -38,7 +38,8 @@ class GoogleSheetsService:
         "價位",
         "推薦原因",
         "Google Maps 連結",
-        "IG 來源",
+        "來源",
+        "來源平台",
         "新增時間"
     ]
     
@@ -118,7 +119,8 @@ class GoogleSheetsService:
         price_range: Optional[str] = None,
         recommendation: Optional[str] = None,
         google_maps_url: Optional[str] = None,
-        source_url: Optional[str] = None
+        source_url: Optional[str] = None,
+        source_platform: Optional[str] = None
     ) -> bool:
         """
         新增地點到 Google Sheets
@@ -144,6 +146,7 @@ class GoogleSheetsService:
                 recommendation or "",
                 google_maps_url or "",
                 source_url or "",
+                source_platform or "instagram",
                 datetime.now().strftime("%Y-%m-%d %H:%M")
             ]
             

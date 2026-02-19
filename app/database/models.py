@@ -42,6 +42,7 @@ class Place(Base):
     # 來源資訊
     source_url = Column(Text, nullable=False)
     source_account = Column(String(100), nullable=True)
+    source_platform = Column(String(20), default="instagram")  # instagram, threads
     telegram_chat_id = Column(String(50), nullable=True)
     
     # 推薦資訊
@@ -109,6 +110,15 @@ async def init_db():
     """初始化資料庫"""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # 資料庫過程中新增的欄位（無 Alembic，用 ALTER TABLE 補上）
+        try:
+            await conn.execute(
+                __import__('sqlalchemy').text(
+                    "ALTER TABLE places ADD COLUMN source_platform VARCHAR(20) DEFAULT 'instagram'"
+                )
+            )
+        except Exception:
+            pass  # 欄位已存在，忽略
 
 
 async def get_session() -> AsyncSession:

@@ -10,7 +10,7 @@ from telegram.error import TimedOut, NetworkError
 from telegram.ext import ContextTypes
 
 from app.config import settings
-from app.services.downloader import InstagramDownloader
+from app.services.downloader import InstagramDownloader, DownloadResult
 from app.services.transcriber import WhisperTranscriber
 from app.services.visual_analyzer import VideoVisualAnalyzer
 from app.services.place_extractor import PlaceExtractor, PlaceInfo, ExtractionResult
@@ -21,6 +21,36 @@ from app.database.models import Place, async_session
 
 
 logger = logging.getLogger(__name__)
+
+
+async def safe_reply_text(message: Message, text: str, max_retries: int = 3, **kwargs) -> Optional[Message]:
+    """
+    安全地回覆訊息，帶有重試機制
+    
+    Args:
+        message: 原訊息（用於回覆）
+        text: 要發送的文字內容
+        max_retries: 最大重試次數
+        **kwargs: 其他傳給 reply_text 的參數
+        
+    Returns:
+        Optional[Message]: 成功時返回發送的訊息，失敗時返回 None
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            return await message.reply_text(text, **kwargs)
+        except (TimedOut, NetworkError) as e:
+            if attempt < max_retries:
+                wait_time = (attempt + 1) * 2  # 遞增等待時間: 2, 4, 6 秒
+                logger.warning(f"回覆訊息超時，{wait_time} 秒後重試 ({attempt + 1}/{max_retries})...")
+                await asyncio.sleep(wait_time)
+            else:
+                logger.error(f"回覆訊息失敗（已重試 {max_retries} 次）: {e}")
+                return None
+        except Exception as e:
+            logger.error(f"回覆訊息發生錯誤: {e}")
+            return None
+    return None
 
 
 async def safe_edit_message(message: Message, text: str, max_retries: int = 2, **kwargs) -> bool:
@@ -87,6 +117,11 @@ class PlaceBotHandlers:
         r"https?://(?:www\.)?instagram\.com/share/([A-Za-z0-9_-]+)"
     )
     
+    # Threads URL 正則（支援 threads.net 和 threads.com）
+    THREADS_URL_PATTERN = re.compile(
+        r"https?://(?:www\.)?threads\.(?:net|com)/(?:@[\w.]+/post|t)/([A-Za-z0-9_-]+)"
+    )
+    
     # 正在處理中的訊息 ID（用於去重 - 處理中）
     _processing_messages: Set[int] = set()
     
@@ -113,12 +148,13 @@ class PlaceBotHandlers:
     
     def _get_url_type(self, url: str) -> str:
         """
-        判斷 Instagram URL 類型
+        判斷 URL 類型
         
         Returns:
-            "reel" - Reel/影片
-            "post" - 貼文（可能是圖片或影片）
-            "share" - 分享連結
+            "reel" - Instagram Reel/影片
+            "post" - Instagram 貼文（可能是圖片或影片）
+            "share" - Instagram 分享連結
+            "threads" - Threads 貼文
             "unknown" - 未知
         """
         if self.INSTAGRAM_REEL_PATTERN.match(url):
@@ -127,21 +163,34 @@ class PlaceBotHandlers:
             return "post"
         elif self.INSTAGRAM_SHARE_PATTERN.match(url):
             return "share"
+        elif self.THREADS_URL_PATTERN.match(url):
+            return "threads"
         return "unknown"
     
-    def _extract_ig_url(self, text: str) -> Optional[str]:
-        """從訊息中擷取 Instagram URL"""
-        # 先嘗試標準格式
+    def _extract_url(self, text: str) -> Optional[str]:
+        """從訊息中擷取 Instagram 或 Threads URL"""
+        # 先嘗試 Instagram 標準格式
         match = self.INSTAGRAM_URL_PATTERN.search(text)
         if match:
             return match.group(0)
         
-        # 嘗試分享連結格式
+        # 嘗試 Instagram 分享連結格式
         match = self.INSTAGRAM_SHARE_PATTERN.search(text)
         if match:
             return match.group(0)
         
+        # 嘗試 Threads 連結
+        match = self.THREADS_URL_PATTERN.search(text)
+        if match:
+            return match.group(0)
+        
         return None
+    
+    def _get_platform(self, url: str) -> str:
+        """判斷 URL 來源平台"""
+        if self.THREADS_URL_PATTERN.match(url):
+            return "threads"
+        return "instagram"
     
     def _extract_account_name(self, url: str) -> Optional[str]:
         """從 URL 擷取帳號名稱（需要實際下載後才能取得）"""
@@ -158,15 +207,15 @@ class PlaceBotHandlers:
         
         welcome_message = """🗺️ **探索地圖 Bot**
 
-歡迎使用！傳送 Instagram Reels 連結給我，我會：
+歡迎使用！傳送 Instagram 或 Threads 連結給我，我會：
 
-1. 分析影片內容
+1. 分析影片/圖片/文字內容
 2. 擷取餐廳/景點/店家資訊
 3. 提供 Google Maps 連結
 4. 自動儲存至你的 Maps 清單 ✨
 
 **使用方式：**
-直接貼上 IG Reels 連結即可
+直接貼上 IG 或 Threads 連結即可
 
 **指令：**
 /start - 顯示說明
@@ -513,25 +562,29 @@ class PlaceBotHandlers:
         help_message = """✨ *使用說明*
 
 *支援的連結格式：*
- https://instagram.com/reel/xxx
- https://instagram.com/reels/xxx
- https://instagram.com/p/xxx（影片貼文）
+📷 *Instagram:*
+ • https://instagram.com/reel/xxx
+ • https://instagram.com/reels/xxx
+ • https://instagram.com/p/xxx
+
+🧵 *Threads:*
+ • https://threads.net/@user/post/xxx
+ • https://threads.net/t/xxx
 
 *處理流程：*
-1. 下載影片
-2. 語音轉文字
-3. 畫面分析
-4. 擷取店家資訊
-5. 搜尋 Google Maps
+1. 偵測內容類型（影片/圖片/文字）
+2. 下載並分析內容
+3. 擷取店家資訊
+4. 搜尋 Google Maps
 
 *設定指令：*
 • `/frames` - 設定影片分析幀數
 • `/savelist` - 設定 Google Maps 儲存清單
 
 *注意事項：*
- 處理時間約 1-3 分鐘
- 結果準確度取決於影片內容清晰度
- 建議傳送有明確店名的美食介紹影片"""
+ • 處理時間約 1-3 分鐘
+ • 結果準確度取決於內容清晰度
+ • 建議傳送有明確店名的美食介紹內容"""
         
         await update.message.reply_text(help_message, parse_mode="Markdown")
     
@@ -692,28 +745,36 @@ class PlaceBotHandlers:
             self._processing_messages.discard(message_id)
             return
         
-        # 擷取 IG 連結
-        ig_url = self._extract_ig_url(message_text)
-        if not ig_url:
+        # 擷取連結（Instagram 或 Threads）
+        extracted_url = self._extract_url(message_text)
+        if not extracted_url:
             await update.message.reply_text(
-                "❌ 請傳送有效的 Instagram 連結\n"
+                "❌ 請傳送有效的 Instagram 或 Threads 連結\n"
                 "支援格式：\n"
                 "• instagram.com/reel/xxx\n"
-                "• instagram.com/p/xxx"
+                "• instagram.com/p/xxx\n"
+                "• threads.net/@user/post/xxx\n"
+                "• threads.net/t/xxx"
             )
             self._processing_messages.discard(message_id)
             return
         
-        # 判斷 URL 類型
-        url_type = self._get_url_type(ig_url)
-        logger.info(f"訊息 {message_id} 包含 IG 連結: {ig_url} (類型: {url_type})")
+        # 判斷平台與 URL 類型
+        platform = self._get_platform(extracted_url)
+        url_type = self._get_url_type(extracted_url)
+        logger.info(f"訊息 {message_id} 包含連結: {extracted_url} (平台: {platform}, 類型: {url_type})")
         
-        # 開始處理
-        status_message = await update.message.reply_text("⏳ 正在處理...")
+        # 開始處理（使用安全的回覆方法，帶重試機制）
+        status_message = await safe_reply_text(update.message, "⏳ 正在處理...")
+        if not status_message:
+            logger.error(f"無法發送狀態訊息，跳過處理訊息 {message_id}")
+            self._processing_messages.discard(message_id)
+            return
         
         try:
             # 用於追蹤內容類型
             is_image_post = False
+            is_text_only = False
             post_result = None
             download_result = None
             transcript = ""
@@ -721,11 +782,129 @@ class PlaceBotHandlers:
             post_caption = ""
             source_title = ""
             
-            if url_type == "post":
-                # === 貼文處理流程 ===
+            if url_type == "threads":
+                # === Threads 貼文處理流程 ===
+                await safe_edit_message(status_message, "🔍 正在分析 Threads 貼文類型...")
+                threads_result = await self.downloader.download_threads_post(extracted_url)
+                
+                if not threads_result.success:
+                    await safe_edit_message(status_message, f"❌ Threads 處理失敗：{threads_result.error_message}")
+                    return
+                
+                source_title = threads_result.title or ""
+                post_caption = threads_result.caption or ""
+                
+                if threads_result.content_type == "reel":
+                    # Threads 影片 → 已從 CDN 直接下載，使用 video_path/audio_path
+                    if not threads_result.video_path:
+                        await safe_edit_message(status_message, "❌ Threads 影片下載失敗：無法取得影片檔案")
+                        return
+                    
+                    # 建立 DownloadResult 以供後續影片分析管線使用
+                    download_result = DownloadResult(
+                        success=True,
+                        video_path=threads_result.video_path,
+                        audio_path=threads_result.audio_path,
+                        title=source_title,
+                        caption=post_caption,
+                    )
+                    
+                elif threads_result.content_type in ("post_image", "post_carousel"):
+                    # Threads 圖片 → 走圖片分析管線
+                    is_image_post = True
+                    post_result = threads_result
+                    
+                    await safe_edit_message(status_message, "🔍 正在分析圖片...")
+                    images_to_analyze = threads_result.image_paths[:5]
+                    images_result = await self.visual_analyzer.analyze_images(images_to_analyze)
+                    
+                    visual_description = images_result.overall_visual_summary if images_result.success else ""
+                    transcript = post_caption
+                    
+                    if post_caption:
+                        visual_description = f"【貼文說明】\n{post_caption}\n\n【圖片內容】\n{visual_description}" if visual_description else f"【貼文說明】\n{post_caption}"
+                    
+                elif threads_result.content_type == "text_only":
+                    # Threads 純文字 → 直接擷取地點
+                    is_text_only = True
+                    transcript = post_caption
+                    await safe_edit_message(status_message, "📝 正在從文字內容擷取地點...")
+                    
+                elif threads_result.content_type == "thread_mixed":
+                    # Threads 串文混合媒體（同時有圖片 + 影片）
+                    is_image_post = True
+                    post_result = threads_result
+                    
+                    await safe_edit_message(status_message, "🔗 正在分析串文（圖片 + 影片）...")
+                    
+                    # 建立並行任務
+                    analysis_tasks = []
+                    
+                    # 圖片分析
+                    if threads_result.image_paths:
+                        images_to_analyze = threads_result.image_paths[:5]
+                        analysis_tasks.append(
+                            asyncio.create_task(
+                                self.visual_analyzer.analyze_images(images_to_analyze)
+                            )
+                        )
+                    
+                    # 影片分析（語音 + 視覺）
+                    if threads_result.video_path:
+                        analysis_tasks.append(
+                            asyncio.create_task(
+                                self.transcriber.transcribe(threads_result.audio_path)
+                            )
+                        )
+                        analysis_tasks.append(
+                            asyncio.create_task(
+                                self.visual_analyzer.analyze(threads_result.video_path)
+                            )
+                        )
+                    
+                    results = await asyncio.gather(*analysis_tasks)
+                    
+                    # 解析結果
+                    result_idx = 0
+                    image_desc = ""
+                    video_transcript = ""
+                    video_visual = ""
+                    
+                    if threads_result.image_paths:
+                        img_result = results[result_idx]
+                        image_desc = img_result.overall_visual_summary if img_result.success else ""
+                        result_idx += 1
+                    
+                    if threads_result.video_path:
+                        trans_result = results[result_idx]
+                        video_transcript = trans_result.transcript if trans_result.success else ""
+                        result_idx += 1
+                        
+                        vis_result = results[result_idx]
+                        video_visual = vis_result.overall_visual_summary if vis_result.success else ""
+                        result_idx += 1
+                    
+                    # 合併所有分析結果
+                    parts = []
+                    if post_caption:
+                        parts.append(f"【貼文說明】\n{post_caption}")
+                    if image_desc:
+                        parts.append(f"【圖片內容】\n{image_desc}")
+                    if video_visual:
+                        parts.append(f"【影片畫面】\n{video_visual}")
+                    
+                    visual_description = "\n\n".join(parts) if parts else ""
+                    transcript = video_transcript or post_caption
+                    
+                else:
+                    await safe_edit_message(status_message, f"❌ 不支援的內容類型：{threads_result.content_type}")
+                    return
+            
+            elif url_type == "post":
+                # === Instagram 貼文處理流程 ===
                 # 先嘗試下載圖片（因為 /p/ 大多是圖片貼文）
                 await safe_edit_message(status_message, "🖼️ 正在下載貼文...")
-                post_result = await self.downloader.download_post(ig_url)
+                post_result = await self.downloader.download_post(extracted_url)
                 
                 if post_result.success:
                     # 圖片貼文
@@ -751,7 +930,7 @@ class PlaceBotHandlers:
                     # 其實是影片貼文，切換到影片流程
                     logger.info("貼文為影片，切換到影片處理流程")
                     await safe_edit_message(status_message, "🎬 偵測為影片貼文，正在下載...")
-                    download_result = await self.downloader.download(ig_url)
+                    download_result = await self.downloader.download(extracted_url)
                     
                     if not download_result.success:
                         await safe_edit_message(status_message, f"❌ 下載失敗：{download_result.error_message}")
@@ -763,14 +942,14 @@ class PlaceBotHandlers:
             else:
                 # === Reel/影片處理流程 ===
                 await safe_edit_message(status_message, "🎬 正在下載影片...")
-                download_result = await self.downloader.download(ig_url)
+                download_result = await self.downloader.download(extracted_url)
                 
                 if not download_result.success:
                     # 影片下載失敗，嘗試作為圖片貼文處理（可能是分享連結）
                     logger.info("影片下載失敗，嘗試作為圖片貼文處理...")
                     await safe_edit_message(status_message, "🖼️ 正在嘗試其他方式...")
                     
-                    post_result = await self.downloader.download_post(ig_url)
+                    post_result = await self.downloader.download_post(extracted_url)
                     
                     if post_result.success:
                         is_image_post = True
@@ -876,8 +1055,9 @@ class PlaceBotHandlers:
                         longitude=place_result.longitude,
                         google_place_id=place_result.place_id,
                         google_maps_url=place_result.google_maps_url,
-                        source_url=ig_url,
+                        source_url=extracted_url,
                         source_account=source_title,
+                        source_platform=platform,
                         telegram_chat_id=str(chat_id),
                         recommendation=place_info.recommendation,
                         confidence=place_info.confidence,
@@ -902,7 +1082,8 @@ class PlaceBotHandlers:
                         price_range=place_info.price_range,
                         recommendation=place_info.recommendation,
                         google_maps_url=place_result.google_maps_url,
-                        source_url=ig_url
+                        source_url=extracted_url,
+                        source_platform=platform
                     )
                 
                 # 記錄處理結果

@@ -1,13 +1,17 @@
-"""Instagram Reels 下載服務"""
+"""Instagram / Threads 下載服務"""
 
 import asyncio
+import html as html_lib
+import json
 import logging
 import re
 import uuid
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
-from typing import Optional, List
+from typing import Any, Optional, List, Tuple, Dict
 
+import httpx
 import yt_dlp
 import instaloader
 
@@ -34,15 +38,27 @@ class PostDownloadResult:
     """貼文下載結果"""
 
     success: bool
-    content_type: str = "post"  # "post_image", "post_carousel"
+    content_type: str = "post"  # "post_image", "post_carousel", "reel", "text_only"
     image_paths: List[Path] = field(default_factory=list)
+    video_path: Optional[Path] = None
+    audio_path: Optional[Path] = None
     caption: Optional[str] = None
     title: Optional[str] = None
     error_message: Optional[str] = None
 
 
+class ThreadsContentType(Enum):
+    """Threads 貼文內容類型"""
+    VIDEO = "video"
+    IMAGE = "image"
+    CAROUSEL = "carousel"
+    MIXED = "mixed"  # 串文中同時包含圖片和影片
+    TEXT_ONLY = "text_only"
+    UNKNOWN = "unknown"
+
+
 class InstagramDownloader:
-    """Instagram Reels 下載器"""
+    """Instagram / Threads 下載器"""
 
     # 支援的 Instagram URL 格式
     INSTAGRAM_URL_PATTERNS = [
@@ -55,6 +71,20 @@ class InstagramDownloader:
     REEL_PATTERNS = [
         r"https?://(?:www\.)?instagram\.com/reel/([A-Za-z0-9_-]+)",
         r"https?://(?:www\.)?instagram\.com/reels/([A-Za-z0-9_-]+)",
+    ]
+    
+    # 支援的 Threads URL 格式（支援 threads.net 和 threads.com）
+    THREADS_URL_PATTERNS = [
+        r"https?://(?:www\.)?threads\.(?:net|com)/@[\w.]+/post/([A-Za-z0-9_-]+)",
+        r"https?://(?:www\.)?threads\.(?:net|com)/t/([A-Za-z0-9_-]+)",
+    ]
+    
+    # Threads 預設分享圖 URL 特徵（用於判斷是否為實際圖片）
+    THREADS_DEFAULT_IMAGE_PATTERNS = [
+        "static.cdninstagram.com",
+        "scontent.cdninstagram.com",
+        "threads-logo",
+        "threads_icon",
     ]
     
     # 嘗試的瀏覽器順序
@@ -74,9 +104,13 @@ class InstagramDownloader:
     def _find_cookies_file(self) -> Optional[Path]:
         """尋找 cookies.txt 檔案"""
         if self.COOKIES_FILE.exists():
-            logger.info(f"✅ 找到 cookies 檔案: {self.COOKIES_FILE.absolute()}")
+            logger.info(f"✅ 找到 Instagram cookies 檔案: {self.COOKIES_FILE.absolute()}")
             return self.COOKIES_FILE
         return None
+    
+    def _get_cookies_path_for_url(self, url: str) -> Optional[Path]:
+        """根據 URL 回傳對應的 cookies 檔案路徑"""
+        return self._cookies_file
 
     def _load_cookies_from_netscape(self, cookie_file: Path) -> dict:
         """
@@ -191,17 +225,27 @@ class InstagramDownloader:
             if re.match(pattern, url):
                 return True
         return False
+    
+    def is_threads_url(self, url: str) -> bool:
+        """判斷 URL 是否為 Threads 連結"""
+        for pattern in self.THREADS_URL_PATTERNS:
+            if re.match(pattern, url):
+                return True
+        return False
 
     def validate_url(self, url: str) -> bool:
-        """驗證是否為有效的 Instagram Reels 連結"""
+        """驗證是否為有效的 Instagram 或 Threads 連結"""
         for pattern in self.INSTAGRAM_URL_PATTERNS:
+            if re.match(pattern, url):
+                return True
+        for pattern in self.THREADS_URL_PATTERNS:
             if re.match(pattern, url):
                 return True
         return False
 
     def extract_post_id(self, url: str) -> Optional[str]:
         """從 URL 提取貼文 ID"""
-        for pattern in self.INSTAGRAM_URL_PATTERNS:
+        for pattern in self.INSTAGRAM_URL_PATTERNS + self.THREADS_URL_PATTERNS:
             match = re.match(pattern, url)
             if match:
                 return match.group(1)
@@ -220,7 +264,7 @@ class InstagramDownloader:
         if not self.validate_url(url):
             return DownloadResult(
                 success=False,
-                error_message="無法解析此連結，請確認是否為有效的 Instagram Reels 連結",
+                error_message="無法解析此連結，請確認是否為有效的 Instagram 或 Threads 連結",
             )
 
         # 生成唯一檔名
@@ -252,11 +296,13 @@ class InstagramDownloader:
             "extract_flat": False,
         }
         
-        # 優先使用 cookies.txt 檔案
-        if self._cookies_file:
-            video_ydl_opts["cookiefile"] = str(self._cookies_file)
-            audio_ydl_opts["cookiefile"] = str(self._cookies_file)
-            logger.info("使用 cookies.txt 進行下載")
+        # 優先使用對應平台的 cookies.txt 檔案
+        cookies_path = self._get_cookies_path_for_url(url)
+        if cookies_path:
+            video_ydl_opts["cookiefile"] = str(cookies_path)
+            audio_ydl_opts["cookiefile"] = str(cookies_path)
+            platform = "Threads" if self.is_threads_url(url) else "Instagram"
+            logger.info(f"使用 {platform} cookies.txt 進行下載")
         elif self._working_browser:
             # 備用：使用瀏覽器 cookies
             video_ydl_opts["cookiesfrombrowser"] = (self._working_browser,)
@@ -575,3 +621,655 @@ class InstagramDownloader:
                     logger.debug(f"已刪除暫存目錄: {parent_dir}")
             except Exception as e:
                 logger.debug(f"刪除暫存目錄失敗: {e}")
+
+    # ============================
+    # Threads 專用方法
+    # ============================
+
+    # Googlebot UA：Threads 會為此 UA 回傳伺服器端渲染 HTML（含 data-sjs JSON）
+    _GOOGLEBOT_UA = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+
+    async def detect_threads_content_type(self, url: str) -> Tuple[ThreadsContentType, Dict]:
+        """
+        偵測 Threads 貼文內容類型
+
+        使用 Googlebot UA 請求頁面，解析嵌入的 data-sjs JSON 取得貼文結構化資料。
+        Threads 是 React SPA，一般 UA 不會回傳 og: tags 或嵌入資料。
+        只有 Googlebot UA 會觸發伺服器端渲染。
+
+        Args:
+            url: Threads 貼文連結
+
+        Returns:
+            (ThreadsContentType, metadata_dict)
+        """
+        metadata: Dict = {
+            "description": "",
+            "image_urls": [],
+            "video_urls": [],
+            "author": None,
+            "carousel_items": [],
+            "media_type": None,
+        }
+
+        try:
+            post_data = await self._extract_threads_post_data(url)
+            if not post_data:
+                logger.warning(f"無法從 Threads HTML 提取貼文資料: {url}")
+                return ThreadsContentType.UNKNOWN, metadata
+
+            # 轉換 post_data 為 metadata 格式
+            metadata["description"] = post_data.get("description", "")
+            metadata["image_urls"] = post_data.get("image_urls", [])
+            metadata["video_urls"] = post_data.get("video_urls", [])
+            metadata["author"] = post_data.get("author", "")
+            metadata["carousel_items"] = post_data.get("carousel_items", [])
+            metadata["media_type"] = post_data.get("media_type")
+            metadata["thread_items_count"] = post_data.get("thread_items_count", 1)
+
+            media_type = post_data.get("media_type")
+            thread_count = metadata["thread_items_count"]
+            has_images = bool(metadata["image_urls"])
+            has_videos = bool(metadata["video_urls"])
+
+            # 串文包含多種媒體類型 → MIXED
+            if thread_count > 1 and has_images and has_videos:
+                content_type = ThreadsContentType.MIXED
+                logger.info(
+                    f"串文包含混合媒體 ({thread_count} 篇): "
+                    f"{len(metadata['image_urls'])} 張圖片, "
+                    f"{len(metadata['video_urls'])} 個影片"
+                )
+            # Meta media_type 值：1=圖片, 2=影片, 8=輪播, 19=文字貼文
+            elif media_type == 2 or (not has_images and has_videos):
+                content_type = ThreadsContentType.VIDEO
+            elif media_type == 8:
+                content_type = ThreadsContentType.CAROUSEL
+                if has_videos:
+                    logger.info(f"輪播貼文包含 {len(metadata['video_urls'])} 個影片")
+            elif media_type == 1 or (has_images and not has_videos):
+                content_type = ThreadsContentType.IMAGE
+            elif media_type == 19:
+                # 文字貼文可能附帶內嵌媒體
+                if has_videos:
+                    content_type = ThreadsContentType.VIDEO
+                elif has_images:
+                    content_type = ThreadsContentType.IMAGE
+                else:
+                    content_type = ThreadsContentType.TEXT_ONLY
+            else:
+                # 未知 media_type，嘗試從可用媒體推斷
+                if has_videos:
+                    content_type = ThreadsContentType.VIDEO
+                elif has_images:
+                    content_type = ThreadsContentType.IMAGE
+                elif metadata["description"]:
+                    content_type = ThreadsContentType.TEXT_ONLY
+                else:
+                    content_type = ThreadsContentType.UNKNOWN
+
+            logger.info(
+                f"Threads 內容類型: {content_type.value} "
+                f"(media_type={media_type}, thread_items={thread_count}, "
+                f"images={len(metadata['image_urls'])}, "
+                f"videos={len(metadata['video_urls'])})"
+            )
+            return content_type, metadata
+
+        except Exception as e:
+            logger.error(f"Threads 內容類型偵測失敗: {e}")
+            return ThreadsContentType.UNKNOWN, metadata
+
+    async def _extract_threads_post_data(self, url: str) -> Optional[Dict[str, Any]]:
+        """
+        使用 Googlebot UA 取得 Threads 頁面，解析嵌入的 data-sjs JSON。
+
+        Threads（Meta SPA）對 Googlebot 會回傳伺服器端渲染的 HTML，
+        其中 <script> 標籤含有完整的貼文資料（JSON 格式）。
+
+        Args:
+            url: Threads 貼文連結
+
+        Returns:
+            結構化貼文資料 dict，或 None
+        """
+        headers = {
+            "User-Agent": self._GOOGLEBOT_UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+        }
+
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=20.0,
+            headers=headers,
+        ) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            html_text = resp.text
+
+        logger.info(f"Threads HTML 大小: {len(html_text)} bytes")
+
+        # 搜尋所有 <script> 區塊，找含有 thread_items 的 JSON
+        all_scripts = re.findall(r"<script[^>]*>(.*?)</script>", html_text, re.DOTALL)
+
+        for block in all_scripts:
+            decoded = html_lib.unescape(block)
+            if "thread_items" not in decoded or "media_type" not in decoded:
+                continue
+            if len(decoded) < 5000:
+                continue
+
+            try:
+                data = json.loads(decoded)
+            except json.JSONDecodeError:
+                continue
+
+            node = self._find_thread_node(data)
+            if node:
+                return self._extract_from_thread_node(node)
+
+        logger.warning("在 Threads HTML 中找不到貼文資料")
+        return None
+
+    def _find_thread_node(self, obj: Any, depth: int = 0) -> Optional[Dict]:
+        """
+        在 Meta 的 require JSON 結構中遞迴搜尋含有 thread_items 的節點。
+
+        路徑通常為：
+        require[0][3][0].__bbox.require[0][3][1].__bbox.result.data.data.edges[0].node
+        """
+        if depth > 20:
+            return None
+
+        if isinstance(obj, dict):
+            if "thread_items" in obj:
+                items = obj["thread_items"]
+                if isinstance(items, list) and len(items) > 0:
+                    post = items[0].get("post", {})
+                    if isinstance(post, dict) and "media_type" in post:
+                        return obj
+
+            for val in obj.values():
+                result = self._find_thread_node(val, depth + 1)
+                if result:
+                    return result
+
+        elif isinstance(obj, list):
+            for item in obj[:10]:
+                result = self._find_thread_node(item, depth + 1)
+                if result:
+                    return result
+
+        return None
+
+    def _extract_from_thread_node(self, node: Dict) -> Dict[str, Any]:
+        """
+        從 thread node 提取結構化貼文資料（支援串文 thread chain）。
+
+        遍歷所有 thread_items，過濾同一作者的貼文，
+        合併 caption 文字、聚合所有媒體 URL。
+        """
+        thread_items = node.get("thread_items", [])
+        if not thread_items:
+            return {
+                "media_type": None,
+                "caption": None,
+                "description": None,
+                "author": None,
+                "image_urls": [],
+                "video_urls": [],
+                "carousel_items": [],
+                "thread_items_count": 0,
+            }
+
+        # 取得原作者 username（以第一個 item 為準）
+        first_post = thread_items[0].get("post", {})
+        first_user = first_post.get("user", {})
+        author_username = (
+            first_user.get("username", "") if isinstance(first_user, dict) else ""
+        )
+
+        # 過濾同一作者的 items
+        author_items = []
+        for item in thread_items:
+            post = item.get("post", {})
+            user = post.get("user", {})
+            username = user.get("username", "") if isinstance(user, dict) else ""
+            if username == author_username:
+                author_items.append(item)
+            else:
+                logger.debug(f"跳過非原作者的 thread item (user={username})")
+
+        total = len(author_items)
+        logger.info(
+            f"串文共 {len(thread_items)} 個 items，"
+            f"同作者 {total} 個 (author={author_username})"
+        )
+
+        result: Dict[str, Any] = {
+            "media_type": first_post.get("media_type"),
+            "caption": None,
+            "description": None,
+            "author": author_username,
+            "image_urls": [],
+            "video_urls": [],
+            "carousel_items": [],
+            "thread_items_count": total,
+        }
+
+        caption_parts: List[str] = []
+        description_parts: List[str] = []
+
+        for idx, item in enumerate(author_items):
+            post = item.get("post", {})
+            item_caption = self._extract_item_caption(post)
+            item_description = self._extract_item_description(post)
+
+            if item_caption:
+                caption_parts.append(item_caption)
+            if item_description:
+                description_parts.append(item_description)
+
+            # 根據此 item 的 media_type 提取媒體
+            media_type = post.get("media_type")
+            text_info = post.get("text_post_app_info", {})
+
+            if media_type == 8:
+                self._extract_carousel_media(post, result)
+            elif media_type == 2:
+                self._extract_video_media(post, result)
+            elif media_type == 1:
+                self._extract_image_media(post, result)
+            elif media_type == 19:
+                self._extract_text_post_media(post, text_info, result)
+            else:
+                self._extract_image_media(post, result)
+                self._extract_video_media(post, result)
+
+        # 合併 caption（多篇用編號 + 分隔線）
+        if total > 1 and len(caption_parts) > 1:
+            numbered = [
+                f"[{i + 1}/{total}] {text}"
+                for i, text in enumerate(caption_parts)
+            ]
+            result["caption"] = "\n---\n".join(numbered)
+        elif caption_parts:
+            result["caption"] = caption_parts[0]
+
+        # 合併 description
+        if total > 1 and len(description_parts) > 1:
+            numbered = [
+                f"[{i + 1}/{total}] {text}"
+                for i, text in enumerate(description_parts)
+            ]
+            result["description"] = "\n---\n".join(numbered)
+        elif description_parts:
+            result["description"] = description_parts[0]
+
+        # description 回退
+        if not result["description"] and result["caption"]:
+            result["description"] = result["caption"]
+
+        return result
+
+    @staticmethod
+    def _extract_item_caption(post: Dict) -> Optional[str]:
+        """從單一 thread item 的 post 提取 caption 文字"""
+        caption = post.get("caption")
+        if isinstance(caption, dict):
+            return caption.get("text", "") or None
+        if isinstance(caption, str) and caption:
+            return caption
+        return None
+
+    @staticmethod
+    def _extract_item_description(post: Dict) -> Optional[str]:
+        """從單一 thread item 的 post 提取 text fragments 描述"""
+        text_info = post.get("text_post_app_info", {})
+        if not isinstance(text_info, dict):
+            return None
+        frags = text_info.get("text_fragments", {})
+        if not isinstance(frags, dict):
+            return None
+        fragments = frags.get("fragments", [])
+        texts = [
+            f.get("plaintext", f.get("text", ""))
+            for f in fragments
+            if isinstance(f, dict)
+        ]
+        joined = " ".join(t for t in texts if t)
+        return joined or None
+
+    def _extract_carousel_media(self, post: Dict, result: Dict) -> None:
+        """提取輪播（carousel）媒體"""
+        carousel = post.get("carousel_media", [])
+        for item in carousel:
+            media_item: Dict[str, Any] = {"type": "image", "url": None, "video_url": None}
+
+            img_versions = item.get("image_versions2", {})
+            candidates = (
+                img_versions.get("candidates", [])
+                if isinstance(img_versions, dict)
+                else []
+            )
+            if candidates:
+                media_item["url"] = candidates[0].get("url")
+
+            video_versions = item.get("video_versions", [])
+            if video_versions:
+                media_item["type"] = "video"
+                media_item["video_url"] = video_versions[0].get("url")
+
+            result["carousel_items"].append(media_item)
+            if media_item["url"]:
+                result["image_urls"].append(media_item["url"])
+            if media_item.get("video_url"):
+                result["video_urls"].append(media_item["video_url"])
+
+    def _extract_video_media(self, post: Dict, result: Dict) -> None:
+        """提取影片媒體"""
+        video_versions = post.get("video_versions", [])
+        if video_versions:
+            url = video_versions[0].get("url")
+            if url and url not in result["video_urls"]:
+                result["video_urls"].append(url)
+
+        # 影片縮圖
+        img_versions = post.get("image_versions2", {})
+        candidates = (
+            img_versions.get("candidates", [])
+            if isinstance(img_versions, dict)
+            else []
+        )
+        if candidates:
+            url = candidates[0].get("url")
+            if url and url not in result["image_urls"]:
+                result["image_urls"].append(url)
+
+    def _extract_image_media(self, post: Dict, result: Dict) -> None:
+        """提取圖片媒體"""
+        img_versions = post.get("image_versions2", {})
+        candidates = (
+            img_versions.get("candidates", [])
+            if isinstance(img_versions, dict)
+            else []
+        )
+        if candidates:
+            url = candidates[0].get("url")
+            if url and url not in result["image_urls"]:
+                result["image_urls"].append(url)
+
+    def _extract_text_post_media(
+        self, post: Dict, text_info: Any, result: Dict
+    ) -> None:
+        """提取文字貼文附帶的內嵌媒體"""
+        if not isinstance(text_info, dict):
+            return
+
+        linked = text_info.get("linked_inline_media", {})
+        if not isinstance(linked, dict) or not linked:
+            return
+
+        # 內嵌影片
+        video_versions = linked.get("video_versions", [])
+        if video_versions:
+            url = video_versions[0].get("url")
+            if url:
+                result["video_urls"].append(url)
+
+        # 內嵌圖片
+        img_versions = linked.get("image_versions2", {})
+        candidates = (
+            img_versions.get("candidates", [])
+            if isinstance(img_versions, dict)
+            else []
+        )
+        if candidates:
+            url = candidates[0].get("url")
+            if url:
+                result["image_urls"].append(url)
+
+
+    async def download_threads_post(self, url: str) -> PostDownloadResult:
+        """
+        下載 Threads 貼文（自動偵測內容類型：影片、圖片、輪播、純文字）
+
+        直接從 CDN URL 下載媒體，不依賴 yt-dlp（yt-dlp 不支援 threads.com）。
+
+        Args:
+            url: Threads 貼文連結
+
+        Returns:
+            PostDownloadResult: 下載結果
+        """
+        if not self.is_threads_url(url):
+            return PostDownloadResult(
+                success=False,
+                error_message="無法解析此連結，請確認是否為有效的 Threads 連結",
+            )
+
+        # 偵測內容類型
+        content_type, metadata = await self.detect_threads_content_type(url)
+        logger.info(
+            f"Threads 貼文類型: {content_type.value}, "
+            f"metadata keys: {list(metadata.keys())}"
+        )
+
+        description = metadata.get("description", "")
+        author = metadata.get("author", "")
+
+        if content_type == ThreadsContentType.VIDEO:
+            return await self._download_threads_video(metadata, description, author)
+
+        elif content_type in (ThreadsContentType.IMAGE, ThreadsContentType.CAROUSEL):
+            return await self._download_threads_images(
+                metadata, content_type, description, author
+            )
+
+        elif content_type == ThreadsContentType.MIXED:
+            return await self._download_threads_mixed(
+                metadata, description, author
+            )
+
+        elif content_type == ThreadsContentType.TEXT_ONLY:
+            if not description:
+                return PostDownloadResult(
+                    success=False,
+                    error_message="此 Threads 貼文無文字內容",
+                )
+            return PostDownloadResult(
+                success=True,
+                content_type="text_only",
+                caption=description,
+                title=author,
+            )
+
+        else:
+            return PostDownloadResult(
+                success=False,
+                error_message="無法辨識此 Threads 貼文的內容類型，可能需要登入或貼文已被刪除",
+            )
+
+    async def _download_threads_video(
+        self, metadata: Dict, description: str, author: str
+    ) -> PostDownloadResult:
+        """下載 Threads 影片（從 CDN URL 直接下載）"""
+        video_urls = metadata.get("video_urls", [])
+        if not video_urls:
+            return PostDownloadResult(
+                success=False,
+                content_type="reel",
+                error_message="偵測到影片貼文但無法取得影片 URL",
+            )
+
+        file_id = str(uuid.uuid4())[:8]
+        post_dir = self.temp_dir / f"threads_{file_id}"
+        post_dir.mkdir(parents=True, exist_ok=True)
+
+        video_path = post_dir / "video.mp4"
+
+        try:
+            async with httpx.AsyncClient(
+                follow_redirects=True, timeout=60.0
+            ) as client:
+                resp = await client.get(video_urls[0])
+                resp.raise_for_status()
+                video_path.write_bytes(resp.content)
+                logger.info(
+                    f"下載 Threads 影片: {video_path} "
+                    f"({len(resp.content)} bytes)"
+                )
+        except Exception as e:
+            logger.error(f"Threads 影片下載失敗: {e}")
+            return PostDownloadResult(
+                success=False,
+                content_type="reel",
+                error_message=f"影片下載失敗: {e}",
+            )
+
+        return PostDownloadResult(
+            success=True,
+            content_type="reel",
+            video_path=video_path,
+            audio_path=video_path,  # faster-whisper 可直接處理影片檔
+            caption=description,
+            title=author,
+        )
+
+    async def _download_threads_images(
+        self,
+        metadata: Dict,
+        content_type: ThreadsContentType,
+        description: str,
+        author: str,
+    ) -> PostDownloadResult:
+        """下載 Threads 圖片/輪播圖片"""
+        image_urls = metadata.get("image_urls", [])
+        if not image_urls:
+            return PostDownloadResult(
+                success=False,
+                error_message="偵測到圖片貼文但無法取得圖片 URL",
+            )
+
+        image_paths = await self._download_thread_images(image_urls)
+        if not image_paths:
+            return PostDownloadResult(
+                success=False,
+                error_message="圖片下載失敗",
+            )
+
+        result_type = "post_carousel" if len(image_paths) > 1 else "post_image"
+        return PostDownloadResult(
+            success=True,
+            content_type=result_type,
+            image_paths=image_paths,
+            caption=description,
+            title=author,
+        )
+
+    async def _download_threads_mixed(
+        self,
+        metadata: Dict,
+        description: str,
+        author: str,
+    ) -> PostDownloadResult:
+        """
+        下載 Threads 串文混合媒體（同時包含圖片和影片）。
+
+        下載所有圖片 + 第一個影片，回傳 thread_mixed 類型的結果。
+        """
+        image_urls = metadata.get("image_urls", [])
+        video_urls = metadata.get("video_urls", [])
+        thread_count = metadata.get("thread_items_count", 1)
+
+        logger.info(
+            f"下載 Threads 串文混合媒體 ({thread_count} 篇): "
+            f"{len(image_urls)} 張圖片, {len(video_urls)} 個影片"
+        )
+
+        # 下載圖片
+        image_paths: List[Path] = []
+        if image_urls:
+            image_paths = await self._download_thread_images(image_urls)
+
+        # 下載第一個影片
+        video_path: Optional[Path] = None
+        if video_urls:
+            file_id = str(uuid.uuid4())[:8]
+            post_dir = self.temp_dir / f"threads_{file_id}"
+            post_dir.mkdir(parents=True, exist_ok=True)
+            video_path = post_dir / "video.mp4"
+
+            try:
+                async with httpx.AsyncClient(
+                    follow_redirects=True, timeout=60.0
+                ) as client:
+                    resp = await client.get(video_urls[0])
+                    resp.raise_for_status()
+                    video_path.write_bytes(resp.content)
+                    logger.info(
+                        f"下載 Threads 串文影片: {video_path} "
+                        f"({len(resp.content)} bytes)"
+                    )
+            except Exception as e:
+                logger.warning(f"Threads 串文影片下載失敗: {e}")
+                video_path = None
+
+        if not image_paths and not video_path:
+            return PostDownloadResult(
+                success=False,
+                error_message="串文混合媒體下載失敗：圖片和影片皆無法下載",
+            )
+
+        return PostDownloadResult(
+            success=True,
+            content_type="thread_mixed",
+            image_paths=image_paths,
+            video_path=video_path,
+            audio_path=video_path,  # faster-whisper 可直接處理影片檔
+            caption=description,
+            title=author,
+        )
+
+    async def _download_thread_images(self, image_urls: List[str]) -> List[Path]:
+        """
+        下載 Threads 貼文圖片
+
+        Args:
+            image_urls: 圖片 URL 列表
+
+        Returns:
+            List[Path]: 下載後的圖片檔案路徑
+        """
+        file_id = str(uuid.uuid4())[:8]
+        post_dir = self.temp_dir / f"threads_{file_id}"
+        post_dir.mkdir(parents=True, exist_ok=True)
+
+        image_paths: List[Path] = []
+
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=30.0,
+        ) as client:
+            for idx, img_url in enumerate(image_urls[:10], 1):  # 最多下載 10 張
+                try:
+                    resp = await client.get(img_url)
+                    resp.raise_for_status()
+
+                    # 判斷副檔名
+                    content_type_header = resp.headers.get("content-type", "")
+                    ext = "jpg"
+                    if "png" in content_type_header:
+                        ext = "png"
+                    elif "webp" in content_type_header:
+                        ext = "webp"
+
+                    image_path = post_dir / f"image_{idx:02d}.{ext}"
+                    image_path.write_bytes(resp.content)
+                    image_paths.append(image_path)
+                    logger.info(f"下載 Threads 圖片 {idx}: {image_path}")
+                except Exception as e:
+                    logger.warning(f"下載 Threads 圖片 {idx} 失敗: {e}")
+
+        return image_paths
