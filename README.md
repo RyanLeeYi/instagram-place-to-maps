@@ -6,6 +6,8 @@
 
 將 Instagram / Threads 美食 Reels、貼文、串文中的餐廳/景點資訊自動擷取，同步至 Google Sheets 並儲存至 Google Maps 清單，打造個人美食地圖。
 
+<img width="1917" height="1019" alt="image" src="https://github.com/user-attachments/assets/ff32deba-256c-414f-b27c-2c93d2f90cd5" />
+
 ## 功能特色
 
 | 功能 | 說明 |
