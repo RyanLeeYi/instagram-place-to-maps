@@ -1,0 +1,123 @@
+{
+  "features": [
+    {
+      "id": "F1",
+      "name": "IG Reel 影片下載",
+      "acceptance": "跑 scripts/smoke_pipeline.py，階段 [1] 印出 success=True 且 caption 字數 > 0，temp_videos/ 下產生 mp4 與 mp3",
+      "status": "passing",
+      "evidence": "2026-07-25 冒煙測試：16.63MiB 影片 + caption 343 字，cookies.txt 有效"
+    },
+    {
+      "id": "F2",
+      "name": "語音轉錄（faster-whisper 本地）",
+      "acceptance": "冒煙測試階段 [2] success=True、language 為偵測到的語言、transcript 長度 > 0",
+      "status": "passing",
+      "evidence": "2026-07-25 冒煙測試：zh-TW 信心 99.85%、逐字稿 602 字"
+    },
+    {
+      "id": "F3",
+      "name": "影片視覺分析（minicpm-v 本地）",
+      "acceptance": "冒煙測試階段 [3] success=True 且 frame_descriptions 數量 > 0，每幀有中文描述",
+      "status": "passing",
+      "evidence": "2026-07-25 冒煙測試：98.8 秒影片自動取 10 幀，10/10 皆有描述"
+    },
+    {
+      "id": "F4",
+      "name": "LLM 擷取地點（qwen3 本地）",
+      "acceptance": "冒煙測試階段 [4] found=True 且 place_count > 0，每個地點有 name、city、confidence、search_keywords",
+      "status": "passing",
+      "evidence": "2026-07-25 冒煙測試：抓出 3 個地點（巫婆水餃店 high / 北投市場 medium / 阿宗蝦仔煎 medium）"
+    },
+    {
+      "id": "F5",
+      "name": "Google Places API 驗證地點",
+      "acceptance": "冒煙測試階段 [5] 至少一筆查詢 found=True 且回傳 address 與 rating，error_message 為 None",
+      "status": "passing",
+      "evidence": "2026-07-25 冒煙測試：2/2 命中（芳芳江蘇水餃 3.7、臺北市公有北投市場 4.1）"
+    },
+    {
+      "id": "F6",
+      "name": "Telegram webhook 已註冊且無錯誤",
+      "acceptance": "呼叫 getWebhookInfo，url 非空、last_error_message 為 None、pending_update_count 為 0；getMe 回傳 ok=True",
+      "status": "passing",
+      "evidence": "2026-07-25 檢查：bot ig_reels_foodtomaps_bot、webhook 已註冊、0 pending、無錯誤"
+    },
+    {
+      "id": "F7",
+      "name": "Google Sheets 認證與工作表可讀",
+      "acceptance": "冒煙測試階段 [6] is_configured=True 且 _get_worksheet() 回傳非 None 的工作表物件",
+      "status": "passing",
+      "evidence": "2026-07-25 冒煙測試：工作表1、1664 列"
+    },
+    {
+      "id": "F8",
+      "name": "存進 Google Maps 清單（Playwright）",
+      "acceptance": "冒煙測試階段 [7] get_saved_lists() success=True 且回傳的清單非空；再以一個真實地點呼叫 save_to_list()，該地點出現在 Google Maps 對應清單中（附截圖或清單前後筆數差）",
+      "status": "passing",
+      "evidence": "2026-07-25 修復後：根因是 Google session 過期（cookies 檔完好但伺服器端已失效），跑 interactive_login() 重登取得 48 個 cookies，selector 完全不用改。(1) get_saved_lists() success=True 讀回 31 個清單。(2) 前後筆數差：以尚未在清單中的『及香手工水餃』(ChIJGYvFRVauQjQR5EK_itV7FDA) 測試，儲存前『食物名單』999 個地點且該地點 aria-checked=false、按鈕為『儲存』→ save_to_list() 回 status=saved → 儲存後 1,000 個地點（+1），複查該地點 aria-checked=true、按鈕變『已儲存』。截圖 scratchpad/f8_before.png、f8_after.png。注意：存入後選單狀態有數十秒傳播延遲，剛存完立刻查會看到 checked=false"
+    },
+    {
+      "id": "F9",
+      "name": "失敗路徑可診斷（錯誤欄位命名一致 + 告警層級正確）",
+      "acceptance": "所有 service 結果物件的錯誤欄位統一為 error_message（ListsResult/SaveResult 的 message 改名或加同名別名），呼叫端讀 error_message 一定拿得到原因；Maps 失敗路徑改用 logger.error 而非 logger.warning；清空 browser_state 重現一次，確認訊息說得出是未登入",
+      "status": "passing",
+      "evidence": "2026-07-25 修復：SaveResult/ListsResult 加 error_message property（失敗回 message、成功回 None），message 保留給人看的成功訊息；4 個終局失敗路徑 logger.warning→logger.error 並補上「session 失效」提示。tests/test_maps_result.py 9 passed（含跨 service 一致性 parametrize）。pytest 補進 requirements.txt（此 repo 原本沒裝，測試等於是死的）。acceptance 於 2026-07-25 經 Ryan 簽核改寫（原版基於錯誤前提）"
+    },
+    {
+      "id": "F10",
+      "name": "Telegram 端到端（傳連結收到回覆）",
+      "acceptance": "從 Telegram 傳一則 IG Reel 連結給 bot，5 分鐘內收到含地點名稱與 Google Maps 連結的回覆，且 SQLite places 表新增對應筆數",
+      "status": "failing",
+      "evidence": null
+    },
+    {
+      "id": "F11",
+      "name": "IG 圖文貼文擷取（instaloader）",
+      "acceptance": "以一則 /p/ 圖文貼文跑 download_post()，回傳 success=True 且取得圖片與 caption；若因上游 instaloader 問題失敗，錯誤訊息要指出是上游而非設定問題",
+      "status": "failing",
+      "evidence": null
+    },
+    {
+      "id": "F12",
+      "name": "Threads 貼文與串文擷取",
+      "acceptance": "以一則 Threads 串文跑 download_threads_post()，回傳串文各則的文字與媒體，數量與網頁上可見的則數一致",
+      "status": "failing",
+      "evidence": null
+    },
+    {
+      "id": "F13",
+      "name": "重複 URL 去重",
+      "acceptance": "同一則連結連傳兩次，第二次 bot 回覆已處理過並附上既有紀錄，SQLite places 表不新增重複筆數（依 docs/telegram-deduplication.md）",
+      "status": "failing",
+      "evidence": null
+    },
+    {
+      "id": "F14",
+      "name": "登入狀態要反映真實 session 而非檔案存在",
+      "acceptance": "is_logged_in() 在 cookies 檔存在但 Google session 已失效時要回傳 False（或另提供 verify_session() 供呼叫端用）；以一份過期的 google_auth.json 重現，確認回傳 False 且訊息提示要重跑 /setup_google",
+      "status": "failing",
+      "evidence": "2026-07-25 發現：is_logged_in() 只檢查 auth_file.exists()，session 死了半年仍一路回報 True，是 F8 壞掉沒被察覺的第二層原因"
+    },
+    {
+      "id": "F15",
+      "name": "結果物件一致性測試改為自動掃描",
+      "acceptance": "tests/test_maps_result.py 的一致性測試不再手維護清單，改成掃描 app/services/ 下所有 @dataclass 結果物件；新增一個沿用 message 命名的假結果物件時該測試要 fail",
+      "status": "failing",
+      "evidence": "2026-07-25 review LOW#6：目前 parametrize 只涵蓋 8 個結果物件中的 4 個（缺 DownloadResult、PostDownloadResult、VisualAnalysisResult、ImageAnalysisResult），測試名稱宣稱的不變量沒真的被釘住"
+    },
+    {
+      "id": "F16",
+      "name": "SaveResult/ListsResult 的 error_message 建構介面對稱",
+      "acceptance": "SaveResult(success=False, status='failed', error_message='x') 這種寫法要嘛正常運作、要嘛給出明確錯誤訊息，不能是 TypeError/AttributeError；dataclasses.asdict() 要含得到失敗原因",
+      "status": "failing",
+      "evidence": "2026-07-25 review LOW#7：error_message 是唯讀 property，其他 service 是可傳入 field；日後新增失敗路徑照別處寫法會炸在失敗分支（最少被跑到的地方）"
+    },
+    {
+      "id": "F17",
+      "name": "init.ps1 不自行解析 .env",
+      "acceptance": "init.ps1 取模型名稱改為呼叫 app/config.py（例如 python -c 印出 settings 值），與 app 實際讀到的值必為同一份；.env 內有被註解掉的同名設定時仍取到正確值",
+      "status": "failing",
+      "evidence": "2026-07-25 review LOW#8：init.ps1 自行 regex 解析 .env，fallback 預設值與 .env.example 不一致且未錨定行首，會與 app/config.py 漂移，也繞過 ARCHITECTURE 的『只有 config.py 讀 env』邊界"
+    }
+  ]
+}

@@ -35,5 +35,15 @@ instaloader_session/
 # OS
 .DS_Store
 Thumbs.db
-docs/
+# docs：契約文件要進 repo（feature_list 的 acceptance 會指向它們），
+# 只排除本地 scratch 與 review 產物
+docs/code-review/
+docs/scratch/
 .github/
+.harness/
+
+# 驗收截圖：可能含登入狀態的 Google Maps 畫面（頭像、清單名、email）
+*.png
+*.jpg
+*.jpeg
+scratchpad/

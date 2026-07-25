@@ -22,6 +22,15 @@ class SaveResult:
     status: Literal["saved", "already_saved", "failed", "not_logged_in", "disabled"]
     message: str = ""
 
+    @property
+    def error_message(self) -> Optional[str]:
+        """失敗原因；成功時為 None。
+
+        與 downloader / google_places / transcriber 等 service 的欄位名一致——
+        呼叫端讀 error_message 一定拿得到原因，不會因為這裡叫 message 而讀到 None。
+        """
+        return None if self.success else (self.message or None)
+
 
 @dataclass
 class ListsResult:
@@ -29,6 +38,11 @@ class ListsResult:
     success: bool
     lists: List[str] = field(default_factory=list)
     message: str = ""
+
+    @property
+    def error_message(self) -> Optional[str]:
+        """失敗原因；成功時為 None。理由同 SaveResult.error_message。"""
+        return None if self.success else (self.message or None)
 
 
 class GoogleMapsSaver:
@@ -159,7 +173,7 @@ class GoogleMapsSaver:
                     )
                     
                 except PlaywrightTimeout:
-                    logger.warning("等待登入超時")
+                    logger.error("等待登入超時（5 分鐘內未偵測到登入）")
                     await browser.close()
                     return SaveResult(
                         success=False,
@@ -228,7 +242,7 @@ class GoogleMapsSaver:
                 # 找到儲存按鈕
                 save_button = await self._find_save_button(page)
                 if not save_button:
-                    logger.warning("找不到儲存按鈕")
+                    logger.error("找不到儲存按鈕——通常代表 Google session 已失效（cookies 檔存在不代表還有效）")
                     await browser.close()
                     return ListsResult(
                         success=False,
@@ -244,7 +258,7 @@ class GoogleMapsSaver:
                 try:
                     await page.wait_for_selector('[role="menu"]', timeout=5000)
                 except PlaywrightTimeout:
-                    logger.warning("儲存選單未出現")
+                    logger.error("點擊儲存後選單未出現——可能 session 已失效或 Maps UI 改版")
                     await browser.close()
                     return ListsResult(
                         success=False,
@@ -338,7 +352,7 @@ class GoogleMapsSaver:
                         message=f"找到 {len(lists)} 個清單"
                     )
                 else:
-                    logger.warning("未找到任何清單")
+                    logger.error("未找到任何清單——可能 session 已失效或帳戶確實沒有清單")
                     return ListsResult(
                         success=False,
                         lists=[],
