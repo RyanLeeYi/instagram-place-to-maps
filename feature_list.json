@@ -118,6 +118,41 @@
       "acceptance": "init.ps1 取模型名稱改為呼叫 app/config.py（例如 python -c 印出 settings 值），與 app 實際讀到的值必為同一份；.env 內有被註解掉的同名設定時仍取到正確值",
       "status": "failing",
       "evidence": "2026-07-25 review LOW#8：init.ps1 自行 regex 解析 .env，fallback 預設值與 .env.example 不一致且未錨定行首，會與 app/config.py 漂移，也繞過 ARCHITECTURE 的『只有 config.py 讀 env』邊界"
+    },
+    {
+      "id": "F18",
+      "name": "Places 匹配要有信心度，不得靜默採信第一筆",
+      "acceptance": "search_place 取多筆候選（maxResultCount >= 5）並在候選中挑選，回傳結果帶 match_confidence（high/medium/low）與被採用的候選名稱；LLM 抓到的店名與採用店名相似度低於門檻時必須標 low 而非靜默回傳。回歸測試：以『巫婆水餃店 台北 北投』查詢，結果要嘛是巫婆水餃、要嘛 match_confidence=low，不得像 2026-07-25 那樣靜默回傳『芳芳江蘇水餃』且 found=True。Telegram 回覆對 low 信心要標示需人工確認",
+      "status": "failing",
+      "evidence": "2026-07-25 發現：google_places.py:127-133 用 maxResultCount=1、無 locationBias、無名稱驗證，直接採信第一筆。實測同一支影片兩次跑出兩個不同的錯誤店家（芳芳江蘇水餃 / 丫頭水餃），而逐字稿明確講的是巫婆水餃"
+    },
+    {
+      "id": "F19",
+      "name": "Spike：場景抽幀（claude-real-video）vs 現行固定間隔抽幀",
+      "acceptance": "對同一支含店家招牌的 reel 各跑一次現行抽幀與 crv 場景抽幀，比較三個數字：總幀數、招牌／店名可辨識的幀數、抽幀耗時；結論（採用或不採用，含理由與數據）寫進 docs/spike-crv.md。這是決策型 spike——產出報告即算完成，不以『換掉抽幀邏輯』為通過條件",
+      "status": "passing",
+      "evidence": "2026-07-25 報告在 docs/spike-crv.md。結論不採用：同為 10 幀時現行做法反而抓到 1 幀店名 + 2 幀店面，crv 掛零——因為 --max-frames 10 會讓 crv 退化成等距取樣（選點 0/10.4/20.1/.../89.4 秒）。crv 不設限抽 150 幀（149 個真實變化）確實更完整，但成本是現行的 15 倍。限制：n=1，只測快剪探店型內容"
+    },
+    {
+      "id": "F20",
+      "name": "Whisper 轉錄改用 GPU（cuda）",
+      "acceptance": "同一段音訊分別以 WHISPER_DEVICE=cpu 與 cuda 轉錄，記錄模型載入時間與轉錄時間；cuda 的轉錄文字與 cpu 版本語意一致（不得因量化差異產生明顯錯字），且轉錄時間顯著較短才改預設值。若 cuda 因缺 cuDNN/cuBLAS 或顯存不足而失敗，程式要能自動退回 cpu 而不是讓整支 pipeline 掛掉，並記錄前後數字與結論",
+      "status": "passing",
+      "evidence": "2026-07-26 實測（RTX 3050 8GB）：短音檔 6.3s→3.0s（2.1x）、長音檔 50.3s→16.6s（3.0x）。品質不降反升——float16 比 int8 準，CPU 把『深夜關東煮』聽成『聲音關東主電』，CUDA 正確。需 nvidia-cublas-cu12 + nvidia-cudnn-cu12（venv 內 2.0GB，requirements 標為選用）；ctranslate2 不吃 os.add_dll_directory，改由 transcriber._register_cuda_dll_path() 在建模型前寫入 os.environ['PATH']。CUDA 失敗自動退回 CPU：載入後跑一段靜音暖機把 DLL 缺失逼出來再攔截（WhisperModel() 建構時不碰 GPU）。.env 已切 cuda，完整冒煙 7/7 全綠（213s）"
+    },
+    {
+      "id": "F21",
+      "name": "Spike：Gemini（agy）影片理解 vs 本地 pipeline",
+      "acceptance": "取 5 支實際處理過的 IG reel，各跑一次本地 pipeline（whisper+vision+LLM）與 agy 影片理解，記錄各自抓到的店名、Places 是否命中、耗時；由 Ryan 人工判定哪些答案正確，算出兩者命中率。結論（整段換掉／低信心才升級／不採用，含數據與代價）寫進 docs/spike-gemini-video.md。決策型 spike，產出報告即算完成",
+      "status": "passing",
+      "evidence": "2026-07-26 報告在 docs/spike-gemini-video.md。5 支 reel 對照：總耗時 743s→88s（8.5x）；強項互補——本地贏在語音線索（巫婆水餃只在逐字稿裡），agy 贏在招牌 OCR（酒場清志郎只在畫面裡，本地完全沒抓到）。agy 5 支失敗 1 支（自行改走 shell 被權限擋），且會過度擷取路過招牌。Ryan 判定：只要影片推薦的店家、兩邊都跑合併結果 → 後續實作見 F22"
+    },
+    {
+      "id": "F22",
+      "name": "本地 + Gemini 雙來源合併與推薦店家篩選",
+      "acceptance": "pipeline 同時取得本地候選（逐字稿+幀描述）與 Gemini 候選（影片理解），合併去重後由 LLM 依逐字稿/caption 判定哪些是『作者在推薦的店家』，只有這些進 Places 驗證與入庫。回歸案例兩條都要過：(a) DT2w2PVgXo3 要留下巫婆水餃、濾掉蔡元益紅茶等路過招牌；(b) 酒場清志郎那支（店名只在招牌上）要留下該店。Gemini 側失敗（權限/逾時/額度）時必須降級為只用本地結果、pipeline 不得中斷，並在回覆標示來源",
+      "status": "failing",
+      "evidence": null
     }
   ]
 }

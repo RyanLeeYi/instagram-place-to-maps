@@ -40,3 +40,6 @@ playwright>=1.40.0
 
 # 開發依賴
 pytest>=8.0.0
+
+# GPU 轉錄（選用，約 2GB）：裝了才會用 cuda，沒裝會自動退回 CPU
+# pip install nvidia-cublas-cu12 nvidia-cudnn-cu12

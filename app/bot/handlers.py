@@ -1030,7 +1030,10 @@ class PlaceBotHandlers:
                 search_query = place_info.search_keywords[0] if place_info.search_keywords else place_info.name
                 if place_info.city and place_info.name:
                     search_query = f"{place_info.name} {place_info.city}"
-                place_result = await self.places_service.search_place(search_query)
+                # 傳純店名（不含城市）當驗證基準，否則相似度會被地名稀釋（F18）
+                place_result = await self.places_service.search_place(
+                    search_query, expected_name=place_info.name
+                )
                 return (place_info, place_result)
             
             # 並行搜尋所有地點的 Google Maps
@@ -1142,6 +1145,12 @@ class PlaceBotHandlers:
                 lines.append("")
                 lines.append(f"🗺️ *Google Maps：*")
                 lines.append(safe_maps_url)
+                # Places 回的可能根本不是同一家（F18）——低信心要講出來，不要靜默採用
+                if place_result.needs_human_check:
+                    lines.append(
+                        f"🟠 *請人工確認：* Google Maps 比對到的是 "
+                        f"「{escape_markdown(place_result.name or '未知')}」，與影片中的店名不符"
+                    )
                 lines.append("")
                 if place_result.rating:
                     lines.append(f"⭐ 評分：{escape_markdown(str(place_result.rating))} \\({place_result.user_ratings_total} 則評論\\)")
@@ -1180,6 +1189,11 @@ class PlaceBotHandlers:
                         lines.append(f"   ⭐ {escape_markdown(str(place_result.rating))}")
                     if safe_maps_url:
                         lines.append(f"   🗺️ {safe_maps_url}")
+                    if place_result.needs_human_check:
+                        lines.append(
+                            f"   🟠 比對到「{escape_markdown(place_result.name or '未知')}」，"
+                            f"店名不符請人工確認"
+                        )
                     
                     # 在多地點迴圈中，找到對應的儲存結果
                     for save_item in maps_save_results:

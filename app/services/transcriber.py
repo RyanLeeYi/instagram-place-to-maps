@@ -2,10 +2,13 @@
 
 import asyncio
 import logging
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List
 
+import numpy as np
 from faster_whisper import WhisperModel
 
 from app.config import settings
@@ -45,28 +48,70 @@ class WhisperTranscriber:
 
     def __init__(self):
         self._model: Optional[WhisperModel] = None
+        self._active_device: Optional[str] = None
+
+    @staticmethod
+    def _register_cuda_dll_path() -> None:
+        """把 venv 內的 CUDA runtime DLL 加進 PATH。
+
+        ctranslate2 載入 cublas64_12.dll / cudnn64_9.dll 的方式不吃 os.add_dll_directory()，
+        必須在建立模型前就出現在 PATH 裡（Windows 實測，2026-07-26）。
+        """
+        nvidia_root = Path(sys.executable).parent.parent / "Lib" / "site-packages" / "nvidia"
+        bin_dirs = [
+            str(nvidia_root / name / "bin")
+            for name in ("cublas", "cudnn", "cuda_nvrtc")
+            if (nvidia_root / name / "bin").is_dir()
+        ]
+        if not bin_dirs:
+            return
+        current = os.environ.get("PATH", "")
+        missing = [d for d in bin_dirs if d not in current]
+        if missing:
+            os.environ["PATH"] = os.pathsep.join(missing + [current])
+            logger.debug(f"已將 CUDA runtime 路徑加入 PATH: {missing}")
+
+    def _load(self, device: str) -> WhisperModel:
+        compute_type = "float16" if device == "cuda" else "int8"
+        if device == "cuda":
+            self._register_cuda_dll_path()
+        logger.info(
+            f"載入 Whisper 模型: {settings.whisper_model_size} "
+            f"(裝置: {device}, 計算類型: {compute_type})"
+        )
+        model = WhisperModel(
+            settings.whisper_model_size,
+            device=device,
+            compute_type=compute_type,
+        )
+        # WhisperModel() 不會真的碰 GPU，DLL 缺失要到第一次 encode 才爆——
+        # 這裡先跑一段靜音把錯誤逼出來，才有機會在 pipeline 外退回 CPU
+        if device == "cuda":
+            silence = np.zeros(16000, dtype=np.float32)
+            list(model.transcribe(silence, beam_size=1)[0])
+        return model
 
     def _get_model(self) -> WhisperModel:
-        """延遲載入模型（首次使用時才載入）"""
-        if self._model is None:
-            logger.info(
-                f"載入 Whisper 模型: {settings.whisper_model_size} "
-                f"(裝置: {settings.whisper_device})"
-            )
-            
-            # 根據裝置選擇計算類型
-            if settings.whisper_device == "cuda":
-                compute_type = "float16"
-            else:
-                compute_type = "int8"
-            
-            self._model = WhisperModel(
-                settings.whisper_model_size,
-                device=settings.whisper_device,
-                compute_type=compute_type,
-            )
-            logger.info("Whisper 模型載入完成")
-        
+        """延遲載入模型（首次使用時才載入）；cuda 失敗時自動退回 cpu。"""
+        if self._model is not None:
+            return self._model
+
+        device = settings.whisper_device
+        if device == "cuda":
+            try:
+                self._model = self._load("cuda")
+                self._active_device = "cuda"
+                logger.info("Whisper 模型載入完成（GPU）")
+                return self._model
+            except Exception as exc:  # noqa: BLE001 — 任何 CUDA 問題都要能退回 CPU
+                logger.error(
+                    f"Whisper CUDA 初始化失敗，退回 CPU：{type(exc).__name__}: {exc}"
+                )
+                device = "cpu"
+
+        self._model = self._load(device)
+        self._active_device = device
+        logger.info(f"Whisper 模型載入完成（{device.upper()}）")
         return self._model
 
     def _transcribe_sync(self, audio_path: Path) -> TranscriptionResult:

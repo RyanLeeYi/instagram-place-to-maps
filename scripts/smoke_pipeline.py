@@ -101,10 +101,13 @@ async def run(url: str) -> dict:
         try:
             for place in (extraction.places[:2] if extraction else []):
                 keywords = place.search_keywords or [place.name]
-                search = await GooglePlacesService().search_with_keywords(keywords)
+                search = await GooglePlacesService().search_with_keywords(
+                    keywords, expected_name=place.name
+                )
                 places_ok = places_ok or search.found
                 print(f"    {keywords} -> found={search.found} name={search.name} "
-                      f"rating={search.rating} err={search.error_message}")
+                      f"信心={search.match_confidence.value} rating={search.rating} "
+                      f"err={search.error_message}")
             if not extraction or not extraction.places:
                 print("    SKIP 上一階段沒有地點可查")
         except Exception as exc:  # noqa: BLE001
