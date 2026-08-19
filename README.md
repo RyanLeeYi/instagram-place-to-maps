@@ -372,3 +372,18 @@ instagram-place-to-maps/
 - [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) — Telegram Bot API
 - [FastAPI](https://fastapi.tiangolo.com) — 現代 Python 網頁框架
 - [gspread](https://github.com/burnash/gspread) — Google Sheets Python API
+
+
+## docs/archive/
+
+Historical material, kept for context and never used to judge anything.
+
+- `features.jsonl` — one line per feature that passed: the whole entry, moved out
+  of `feature_list.json` at wrap-up. The main list keeps only failing entries.
+  An entry comes back into `feature_list.json` if the feature is reopened.
+  `harness-plan.py` merges this file back in for hub detection and prerequisite
+  checks, so archiving does not distort its analysis.
+- `*.md` — design documents written before a feature was signed off.
+
+The only spec is the `acceptance` field in `feature_list.json`. Nothing in this
+directory is authoritative.

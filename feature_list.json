@@ -1,60 +1,6 @@
 {
   "features": [
     {
-      "id": "F1",
-      "name": "IG Reel 影片下載",
-      "status": "passing",
-      "evidence": "2026-07-25 冒煙測試：16.63MiB 影片 + caption 343 字，cookies.txt 有效"
-    },
-    {
-      "id": "F2",
-      "name": "語音轉錄（faster-whisper 本地）",
-      "status": "passing",
-      "evidence": "2026-07-25 冒煙測試：zh-TW 信心 99.85%、逐字稿 602 字"
-    },
-    {
-      "id": "F3",
-      "name": "影片視覺分析（minicpm-v 本地）",
-      "status": "passing",
-      "evidence": "2026-07-25 冒煙測試：98.8 秒影片自動取 10 幀，10/10 皆有描述"
-    },
-    {
-      "id": "F4",
-      "name": "LLM 擷取地點（qwen3 本地）",
-      "status": "passing",
-      "evidence": "2026-07-25 冒煙測試：抓出 3 個地點（巫婆水餃店 high / 北投市場 medium / 阿宗蝦仔煎 medium）"
-    },
-    {
-      "id": "F5",
-      "name": "Google Places API 驗證地點",
-      "status": "passing",
-      "evidence": "2026-07-25 冒煙測試：2/2 命中（芳芳江蘇水餃 3.7、臺北市公有北投市場 4.1）"
-    },
-    {
-      "id": "F6",
-      "name": "Telegram webhook 已註冊且無錯誤",
-      "status": "passing",
-      "evidence": "2026-07-25 檢查：bot ig_reels_foodtomaps_bot、webhook 已註冊、0 pending、無錯誤"
-    },
-    {
-      "id": "F7",
-      "name": "Google Sheets 認證與工作表可讀",
-      "status": "passing",
-      "evidence": "2026-07-25 冒煙測試：工作表1、1664 列"
-    },
-    {
-      "id": "F8",
-      "name": "存進 Google Maps 清單（Playwright）",
-      "status": "passing",
-      "evidence": "2026-07-25 修復後：根因是 Google session 過期（cookies 檔完好但伺服器端已失效），跑 interactive_login() 重登取得 48 個 cookies，selector 完全不用改。(1) get_saved_lists() success=True 讀回 31 個清單。(2) 前後筆數差：以尚未在清單中的『及香手工水餃』(ChIJGYvFRVauQjQR5EK_itV7FDA) 測試，儲存前『食物名單』999 個地點且該地點 aria-checked=false、按鈕為『儲存』→ save_to_list() 回 status=saved → 儲存後 1,000 個地點（+1），複查該地點 aria-checked=true、按鈕變『已儲存』。截圖 scratchpad/f8_before.png、f8_after.png。注意：存入後選單狀態有數十秒傳播延遲，剛存完立刻查會看到 checked=false"
-    },
-    {
-      "id": "F9",
-      "name": "失敗路徑可診斷（錯誤欄位命名一致 + 告警層級正確）",
-      "status": "passing",
-      "evidence": "2026-07-25 修復：SaveResult/ListsResult 加 error_message property（失敗回 message、成功回 None），message 保留給人看的成功訊息；4 個終局失敗路徑 logger.warning→logger.error 並補上「session 失效」提示。tests/test_maps_result.py 9 passed（含跨 service 一致性 parametrize）。pytest 補進 requirements.txt（此 repo 原本沒裝，測試等於是死的）。acceptance 於 2026-07-25 經 Ryan 簽核改寫（原版基於錯誤前提）"
-    },
-    {
       "id": "F10",
       "name": "Telegram 端到端（傳連結收到回覆）",
       "prerequisites": [
@@ -148,24 +94,6 @@
       "acceptance": "search_place 取多筆候選（maxResultCount >= 5）並在候選中挑選，回傳結果帶 match_confidence（high/medium/low）與被採用的候選名稱；LLM 抓到的店名與採用店名相似度低於門檻時必須標 low 而非靜默回傳。回歸測試：以『巫婆水餃店 台北 北投』查詢，結果要嘛是巫婆水餃、要嘛 match_confidence=low，不得像 2026-07-25 那樣靜默回傳『芳芳江蘇水餃』且 found=True。Telegram 回覆對 low 信心要標示需人工確認",
       "status": "failing",
       "evidence": "2026-07-25 發現：google_places.py:127-133 用 maxResultCount=1、無 locationBias、無名稱驗證，直接採信第一筆。實測同一支影片兩次跑出兩個不同的錯誤店家（芳芳江蘇水餃 / 丫頭水餃），而逐字稿明確講的是巫婆水餃"
-    },
-    {
-      "id": "F19",
-      "name": "Spike：場景抽幀（claude-real-video）vs 現行固定間隔抽幀",
-      "status": "passing",
-      "evidence": "2026-07-25 報告在 docs/spike-crv.md。結論不採用：同為 10 幀時現行做法反而抓到 1 幀店名 + 2 幀店面，crv 掛零——因為 --max-frames 10 會讓 crv 退化成等距取樣（選點 0/10.4/20.1/.../89.4 秒）。crv 不設限抽 150 幀（149 個真實變化）確實更完整，但成本是現行的 15 倍。限制：n=1，只測快剪探店型內容"
-    },
-    {
-      "id": "F20",
-      "name": "Whisper 轉錄改用 GPU（cuda）",
-      "status": "passing",
-      "evidence": "2026-07-26 實測（RTX 3050 8GB）：短音檔 6.3s→3.0s（2.1x）、長音檔 50.3s→16.6s（3.0x）。品質不降反升——float16 比 int8 準，CPU 把『深夜關東煮』聽成『聲音關東主電』，CUDA 正確。需 nvidia-cublas-cu12 + nvidia-cudnn-cu12（venv 內 2.0GB，requirements 標為選用）；ctranslate2 不吃 os.add_dll_directory，改由 transcriber._register_cuda_dll_path() 在建模型前寫入 os.environ['PATH']。CUDA 失敗自動退回 CPU：載入後跑一段靜音暖機把 DLL 缺失逼出來再攔截（WhisperModel() 建構時不碰 GPU）。.env 已切 cuda，完整冒煙 7/7 全綠（213s）"
-    },
-    {
-      "id": "F21",
-      "name": "Spike：Gemini（agy）影片理解 vs 本地 pipeline",
-      "status": "passing",
-      "evidence": "2026-07-26 報告在 docs/spike-gemini-video.md。5 支 reel 對照：總耗時 743s→88s（8.5x）；強項互補——本地贏在語音線索（巫婆水餃只在逐字稿裡），agy 贏在招牌 OCR（酒場清志郎只在畫面裡，本地完全沒抓到）。agy 5 支失敗 1 支（自行改走 shell 被權限擋），且會過度擷取路過招牌。Ryan 判定：只要影片推薦的店家、兩邊都跑合併結果 → 後續實作見 F22"
     },
     {
       "id": "F22",
