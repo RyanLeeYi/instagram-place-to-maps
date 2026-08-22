@@ -20,9 +20,17 @@ if (-not (Test-Path ".\.venv\Scripts\python.exe")) {
 Write-Host "      venv OK" -ForegroundColor Green
 
 Write-Host "[3/5] 檢查 Ollama 模型..." -ForegroundColor Yellow
-$envContent = Get-Content ".\.env" -Raw
-$ollamaModel = if ($envContent -match 'OLLAMA_MODEL=([^#\r\n]+)') { $matches[1].Trim() } else { "qwen3:8b" }
-$visionModel = if ($envContent -match 'OLLAMA_VISION_MODEL=([^#\r\n]+)') { $matches[1].Trim() } else { "minicpm-v:8b" }
+# 模型名稱一律問 app/config.py，不在這裡自己解析 .env——
+# 自行 regex 沒錨定行首，會抓到被註解掉的同名設定，fallback 預設值也會與 config.py 漂移
+# （實際漂過：這裡寫 qwen3:8b，config.py 是 qwen2.5:7b）
+$modelProbe = & ".\.venv\Scripts\python.exe" -c "from app.config import settings; print('MODELS ' + settings.ollama_model + ' ' + settings.ollama_vision_model)" 2>&1
+$modelLine = @($modelProbe) | Where-Object { $_ -like "MODELS *" } | Select-Object -Last 1
+if (-not $modelLine) {
+    Write-Host "      讀不到 app/config.py 的模型設定，請先確認 venv 與 .env" -ForegroundColor Red
+    Write-Host "      $modelProbe" -ForegroundColor Red
+    exit 1
+}
+$ollamaModel, $visionModel = ($modelLine -split ' ')[1, 2]
 # 注意：$modelList 是字串陣列，對集合用 -notmatch 是「過濾器」不是布林值
 # （會回傳不符合的元素，ollama list 的標題列永遠不 match → 恆為 truthy → 每次都 pull）
 $modelList = & ollama list 2>&1

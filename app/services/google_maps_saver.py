@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 from pathlib import Path
 from typing import Optional, Literal, List
 from dataclasses import dataclass, field
@@ -15,21 +16,33 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
+def _sync_error_message(result) -> None:
+    """把 message 與 error_message 兩個入口收斂成同一個值。
+
+    error_message 以前是唯讀 property，於是 `SaveResult(..., error_message="x")`
+    這種與其他 service 一致的寫法會炸在失敗分支（最少被跑到的地方）。
+    改成真欄位後兩邊怎麼傳都會通，dataclasses.asdict() 也帶得到失敗原因。
+    """
+    if result.success:
+        result.error_message = None
+        return
+    reason = result.error_message or result.message or None
+    result.error_message = reason
+    if not result.message and reason:
+        result.message = reason
+
+
 @dataclass
 class SaveResult:
     """儲存結果"""
     success: bool
-    status: Literal["saved", "already_saved", "failed", "not_logged_in", "disabled"]
+    status: Literal["saved", "already_saved", "failed", "not_logged_in", "logged_in", "disabled"]
     message: str = ""
+    # 與 downloader / google_places / transcriber 等 service 同名，呼叫端問失敗原因只有一個欄位要記
+    error_message: Optional[str] = None
 
-    @property
-    def error_message(self) -> Optional[str]:
-        """失敗原因；成功時為 None。
-
-        與 downloader / google_places / transcriber 等 service 的欄位名一致——
-        呼叫端讀 error_message 一定拿得到原因，不會因為這裡叫 message 而讀到 None。
-        """
-        return None if self.success else (self.message or None)
+    def __post_init__(self):
+        _sync_error_message(self)
 
 
 @dataclass
@@ -38,11 +51,10 @@ class ListsResult:
     success: bool
     lists: List[str] = field(default_factory=list)
     message: str = ""
+    error_message: Optional[str] = None
 
-    @property
-    def error_message(self) -> Optional[str]:
-        """失敗原因；成功時為 None。理由同 SaveResult.error_message。"""
-        return None if self.success else (self.message or None)
+    def __post_init__(self):
+        _sync_error_message(self)
 
 
 class GoogleMapsSaver:
@@ -65,9 +77,106 @@ class GoogleMapsSaver:
         """檢查功能是否啟用"""
         return settings.google_maps_save_enabled
     
+    # Google 帳戶登入狀態實際依賴的 cookies；少一個或過期就等於沒登入。
+    ESSENTIAL_COOKIES = ("SID", "__Secure-1PSID", "SAPISID")
+
     def is_logged_in(self) -> bool:
-        """檢查是否已有儲存的登入狀態"""
-        return self.auth_file.exists()
+        """檢查是否還有「有效」的登入狀態。
+
+        檔案存在不等於還登入著：cookies 會過期，而過期的 auth 檔照樣躺在磁碟上。
+        這裡只做本機可判定的部分（必要 cookie 在不在、過沒過期）；
+        伺服器端撤銷（cookie 沒過期但 Google 已作廢 session）要靠 verify_session()。
+        """
+        return self._local_session_state()[0]
+
+    def _local_session_state(self) -> tuple[bool, str]:
+        """回傳 (是否可能仍登入, 說明)。純本機判斷，不連網。"""
+        if not self.auth_file.exists():
+            return False, "尚未登入 Google 帳戶，請先執行 /setup_google"
+
+        cookies = self._load_cookies()
+        if not cookies:
+            return False, "登入狀態檔讀不到 cookies，請重新執行 /setup_google"
+
+        now = time.time()
+        by_name = {}
+        for c in cookies:
+            if str(c.get("domain", "")).lstrip(".").startswith("google.com"):
+                by_name.setdefault(c.get("name"), c)
+
+        missing = [n for n in self.ESSENTIAL_COOKIES if n not in by_name]
+        if missing:
+            return False, (
+                f"登入狀態檔缺少必要 cookies（{', '.join(missing)}），"
+                "請重新執行 /setup_google"
+            )
+
+        expired = [
+            n for n in self.ESSENTIAL_COOKIES
+            # expires 為 -1/None 代表 session cookie，本機判定不了，不當成過期
+            if (exp := by_name[n].get("expires")) not in (None, -1) and 0 < exp < now
+        ]
+        if expired:
+            return False, (
+                f"Google 登入狀態已過期（{', '.join(expired)}），"
+                "請重新執行 /setup_google"
+            )
+
+        return True, "本機登入狀態看起來仍有效"
+
+    def login_status_message(self) -> str:
+        """給呼叫端顯示的登入狀態說明（不連網）。"""
+        return self._local_session_state()[1]
+
+    async def verify_session(self) -> SaveResult:
+        """實際連 Google Maps 確認 session 還活著。
+
+        is_logged_in() 只看得到 cookie 過期；session 被伺服器端撤銷時 cookie 仍是「未過期」的，
+        那正是 2026-07-25 那次「死了半年還一路回報已登入」的形狀。要確認就得真的去問一次。
+        """
+        ok, message = self._local_session_state()
+        if not ok:
+            return SaveResult(success=False, status="not_logged_in", message=message)
+
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=['--disable-blink-features=AutomationControlled', '--no-sandbox'],
+                )
+                try:
+                    context = await browser.new_context(
+                        viewport={'width': 1280, 'height': 800},
+                        locale='zh-TW',
+                        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    )
+                    await context.add_cookies(self._load_cookies())
+                    page = await context.new_page()
+                    await page.add_init_script(
+                        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+                    )
+                    # 地點頁上的「儲存」按鈕只有登入時才出現，拿它當登入探針
+                    await page.goto(
+                        "https://www.google.com/maps/place/?q=place_id:ChIJN1t_tDeuEmsRUsoyG83frY4",
+                        wait_until="domcontentloaded",
+                        timeout=30000,
+                    )
+                    await asyncio.sleep(5)
+                    if await self._find_save_button(page):
+                        return SaveResult(success=True, status="logged_in", message="Google session 有效")
+                    return SaveResult(
+                        success=False,
+                        status="not_logged_in",
+                        message="Google session 已失效（cookies 還在但已不被接受），請重新執行 /setup_google",
+                    )
+                finally:
+                    await browser.close()
+        except Exception as e:
+            return SaveResult(
+                success=False,
+                status="failed",
+                message=f"無法驗證 Google session: {e}",
+            )
     
     def _load_cookies(self) -> list:
         """載入已儲存的 cookies"""
@@ -204,7 +313,7 @@ class GoogleMapsSaver:
         if not self.is_logged_in():
             return ListsResult(
                 success=False,
-                message="尚未登入 Google 帳戶，請先執行 /setup_google"
+                message=self.login_status_message()
             )
 
         logger.info("正在獲取 Google Maps 清單...")
@@ -246,7 +355,7 @@ class GoogleMapsSaver:
                     await browser.close()
                     return ListsResult(
                         success=False,
-                        message="找不到儲存按鈕，可能未正確登入"
+                        message="找不到儲存按鈕，Google session 可能已失效，請重新執行 /setup_google"
                     )
 
                 # 點擊儲存按鈕打開選單
@@ -383,7 +492,7 @@ class GoogleMapsSaver:
             return SaveResult(
                 success=False,
                 status="not_logged_in",
-                message="尚未登入 Google 帳戶，請先執行 /setup_google"
+                message=self.login_status_message()
             )
         
         # 優先使用 runtime_settings 的設定，再使用參數，最後使用 .env 預設值
@@ -435,8 +544,8 @@ class GoogleMapsSaver:
                     await browser.close()
                     return SaveResult(
                         success=False,
-                        status="failed",
-                        message="找不到儲存按鈕"
+                        status="not_logged_in",
+                        message="找不到儲存按鈕，Google session 可能已失效，請重新執行 /setup_google"
                     )
                 
                 await save_button.click()

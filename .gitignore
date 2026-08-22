@@ -47,3 +47,4 @@ docs/scratch/
 *.jpg
 *.jpeg
 scratchpad/
+.playwright-mcp/

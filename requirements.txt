@@ -11,7 +11,10 @@ aiosqlite==0.20.0
 
 # Video Download
 yt-dlp==2024.8.6
-instaloader>=4.15
+# 4.15 對現行 Instagram 的 graphql/query 會拿到空回應，接著在解析時炸出
+# TypeError: 'NoneType' object is not subscriptable（2026-08-23 F11 實測）。
+# 4.15.3 修好了，下限不能再放寬回 4.15。
+instaloader>=4.15.3
 
 # AI/ML - Whisper
 faster-whisper>=1.0.3

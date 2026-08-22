@@ -191,18 +191,37 @@ class InstagramDownloader:
                         L.context._session.cookies.set(
                             name, value, domain=".instagram.com"
                         )
-                    
+
+                    # instaloader 自己的 load_session() 除了塞 cookies 還做這件事。
+                    # 少了它，graphql/query 會被 Instagram 回 403，接著函式庫在解析
+                    # 空回應時炸出 TypeError（2026-08-23 F11 實測的死法）。
+                    csrf_token = cookies.get("csrftoken")
+                    if csrf_token:
+                        L.context._session.headers.update({"X-CSRFToken": csrf_token})
+
                     # 驗證登入狀態
                     try:
                         test_user = L.test_login()
                         if test_user:
                             self._instaloader = L
                             self._instaloader_username = test_user
-                            
-                            # 儲存 session 供後續使用
+
+                            # context.username 是 instaloader 判斷「有沒有登入」的依據。
+                            # 手動注入 cookies 不會設它，於是 @_requires_login 的方法
+                            # （例如 save_session_to_file）會擲 LoginRequiredException，
+                            # 把整段成功路徑掀掉，最後誤報「未認證」。
+                            L.context.username = test_user
+
+                            # 儲存 session 供後續使用。存檔失敗不該讓已經成功的認證作廢——
+                            # 下次重跑一次 cookies 流程即可。
                             session_path = self.session_dir / f"session-{test_user}"
-                            L.save_session_to_file(str(session_path))
-                            logger.info(f"✅ 從 cookies.txt 建立 session 並儲存: {test_user}")
+                            try:
+                                L.save_session_to_file(str(session_path))
+                                logger.info(f"✅ 從 cookies.txt 建立 session 並儲存: {test_user}")
+                            except Exception as save_error:
+                                logger.warning(
+                                    f"⚠️ session 已認證但存檔失敗（不影響本次使用）: {save_error}"
+                                )
                             return L
                         else:
                             logger.warning("⚠️ cookies.txt 認證失敗，session 無效")
@@ -218,6 +237,40 @@ class InstagramDownloader:
         logger.warning("⚠️ Instaloader 未認證，僅能存取公開內容")
         self._instaloader = L
         return L
+
+    # instaloader 撞上未認證／被擋時，例外會從函式庫深處冒出來（例如 403 之後
+    # 解析空回應的 TypeError）。原樣丟給使用者只會看到 'NoneType' object is not
+    # subscriptable，看不出是「我的 cookies 過期」還是「Instagram 現在不給抓」。
+    _UPSTREAM_HINTS = (
+        "401", "403", "429", "graphql", "json query",
+        "please wait a few minutes", "rate limit", "too many requests",
+        "connectionexception", "checkpoint",
+    )
+
+    def _diagnose_download_failure(self, error: Exception) -> str:
+        """把 instaloader 的例外翻成「這是設定問題還是上游問題」。"""
+        raw = str(error) or error.__class__.__name__
+
+        if not self._instaloader_username:
+            return (
+                "設定問題：Instagram 未通過認證——cookies.txt 的 session 已失效或過期，"
+                "未認證只抓得到公開內容，且會被 Instagram 擋下。"
+                f"請重新從瀏覽器匯出 cookies.txt。（原始錯誤：{raw}）"
+            )
+
+        haystack = f"{error.__class__.__name__} {raw}".lower()
+        if any(hint in haystack for hint in self._UPSTREAM_HINTS):
+            return (
+                f"上游問題：已以 {self._instaloader_username} 通過認證，"
+                f"是 Instagram / instaloader 這次不給存取，不是本機設定問題，稍後再試。"
+                f"（原始錯誤：{raw}）"
+            )
+
+        return (
+            f"上游問題：已以 {self._instaloader_username} 通過認證，"
+            f"instaloader 回應的結構與預期不符（多半是 Instagram 改版），"
+            f"不是本機設定問題。（原始錯誤：{raw}）"
+        )
 
     def is_reel_url(self, url: str) -> bool:
         """判斷 URL 是否為 Reel（影片）"""
@@ -491,10 +544,11 @@ class InstagramDownloader:
             )
             return result
         except Exception as e:
-            logger.error(f"下載貼文失敗: {e}")
+            message = self._diagnose_download_failure(e)
+            logger.error(f"下載貼文失敗: {message}")
             return PostDownloadResult(
                 success=False,
-                error_message=f"下載失敗: {str(e)}",
+                error_message=message,
             )
 
     def _download_post_sync(self, shortcode: str) -> PostDownloadResult:
@@ -595,11 +649,11 @@ class InstagramDownloader:
                 error_message=f"貼文已被修改或刪除: {e}",
             )
         except Exception as e:
-            error_msg = str(e)
-            logger.error(f"下載貼文失敗: {error_msg}")
+            message = self._diagnose_download_failure(e)
+            logger.error(f"下載貼文失敗: {message}")
             return PostDownloadResult(
                 success=False,
-                error_message=f"下載失敗: {error_msg}",
+                error_message=message,
             )
 
     async def cleanup_post_images(self, image_paths: List[Path]) -> None:
@@ -767,7 +821,9 @@ class InstagramDownloader:
 
             node = self._find_thread_node(data)
             if node:
-                return self._extract_from_thread_node(node)
+                return self._extract_from_thread_node(
+                    node, requested_author=self.extract_threads_author(url)
+                )
 
         logger.warning("在 Threads HTML 中找不到貼文資料")
         return None
@@ -803,12 +859,27 @@ class InstagramDownloader:
 
         return None
 
-    def _extract_from_thread_node(self, node: Dict) -> Dict[str, Any]:
+    _THREADS_AUTHOR_PATTERN = re.compile(
+        r"https?://(?:www\.)?threads\.(?:net|com)/@([\w.]+)/post/"
+    )
+
+    def extract_threads_author(self, url: str) -> Optional[str]:
+        """從 Threads 連結取出帳號（/t/<code> 這種短網址沒有帳號，回 None）。"""
+        match = self._THREADS_AUTHOR_PATTERN.match(url)
+        return match.group(1) if match else None
+
+    def _extract_from_thread_node(
+        self, node: Dict, requested_author: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         從 thread node 提取結構化貼文資料（支援串文 thread chain）。
 
         遍歷所有 thread_items，過濾同一作者的貼文，
         合併 caption 文字、聚合所有媒體 URL。
+
+        requested_author 是連結上的帳號。當這則貼文是「別人串文底下的回覆」時，
+        thread_items[0] 是對方的原PO，用它當作者會回傳完全不相干的內容
+        （2026-08-23 F12 實測：@tomny1993 的咖啡廳清單被換成原PO的埔里地母廟）。
         """
         thread_items = node.get("thread_items", [])
         if not thread_items:
@@ -823,19 +894,28 @@ class InstagramDownloader:
                 "thread_items_count": 0,
             }
 
-        # 取得原作者 username（以第一個 item 為準）
-        first_post = thread_items[0].get("post", {})
-        first_user = first_post.get("user", {})
-        author_username = (
-            first_user.get("username", "") if isinstance(first_user, dict) else ""
-        )
+        def _username_of(item: Dict) -> str:
+            user = item.get("post", {}).get("user", {})
+            return user.get("username", "") if isinstance(user, dict) else ""
+
+        # 作者以連結上的帳號為準；連結沒帶帳號（/t/<code>）或該帳號不在這串裡，
+        # 才退回「第一個 item 的作者」這個舊行為。
+        author_username = ""
+        if requested_author and any(
+            _username_of(item) == requested_author for item in thread_items
+        ):
+            author_username = requested_author
+        else:
+            if requested_author:
+                logger.debug(
+                    f"連結帳號 {requested_author} 不在 thread_items 中，改用第一個 item 的作者"
+                )
+            author_username = _username_of(thread_items[0])
 
         # 過濾同一作者的 items
         author_items = []
         for item in thread_items:
-            post = item.get("post", {})
-            user = post.get("user", {})
-            username = user.get("username", "") if isinstance(user, dict) else ""
+            username = _username_of(item)
             if username == author_username:
                 author_items.append(item)
             else:
@@ -847,8 +927,12 @@ class InstagramDownloader:
             f"同作者 {total} 個 (author={author_username})"
         )
 
+        # media_type 取「作者自己的第一則」。舊版取 thread_items[0]，那在回覆別人
+        # 串文時是原PO的貼文，型別會跟著錯。
+        first_author_post = author_items[0].get("post", {}) if author_items else {}
+
         result: Dict[str, Any] = {
-            "media_type": first_post.get("media_type"),
+            "media_type": first_author_post.get("media_type"),
             "caption": None,
             "description": None,
             "author": author_username,

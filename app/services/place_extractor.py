@@ -48,6 +48,15 @@ class ExtractionResult:
     notes: Optional[str] = None
     
     @property
+    def error_message(self) -> Optional[str]:
+        """失敗原因；found=True 時為 None。
+
+        與 downloader / google_places / transcriber 等 service 同名——
+        呼叫端問「為什麼失敗」只有一個欄位要記，不會因為這裡叫 notes 而讀到 None。
+        """
+        return None if self.found else (self.notes or None)
+
+    @property
     def place_count(self) -> int:
         """回傳找到的地點數量"""
         return len(self.places)
@@ -156,13 +165,14 @@ class PlaceExtractor:
         )
         
         try:
-            # 使用 Ollama 呼叫 LLM（啟用 thinking 模式）
+            # 只傳 requirements.txt 釘住的 ollama 版本支援的參數。
+            # 曾經傳過 think=True，但那是 0.5+ 才有的參數，對釘住的 0.3.3 會
+            # TypeError，整個擷取階段靜默退化成 found=False（2026-08-23 冒煙測試抓到）。
             response = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: ollama.chat(
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}],
-                    think=True,  # 啟用 thinking 模式
                     options={"temperature": 0.3}
                 )
             )

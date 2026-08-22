@@ -647,12 +647,18 @@ class PlaceBotHandlers:
             return
         
         if google_maps_saver.is_logged_in():
-            await update.message.reply_text(
-                "✅ 已登入 Google 帳戶\n\n"
-                "如需重新登入，請先執行 /logout\\_google",
-                parse_mode="Markdown"
-            )
-            return
+            # 檔案在不代表 session 還活著——真的去問一次，別再回報半年前的登入狀態
+            checking = await update.message.reply_text("🔍 正在確認 Google 登入狀態...")
+            verify = await google_maps_saver.verify_session()
+            if verify.success:
+                await checking.edit_text("✅ 已登入 Google 帳戶\n\n如需重新登入，請先執行 /logout_google")
+                return
+            if verify.status != "not_logged_in":
+                await checking.edit_text(f"⚠️ {verify.message}")
+                return
+            await checking.edit_text(f"⚠️ {verify.message}\n\n將重新開啟瀏覽器登入...")
+        elif google_maps_saver.auth_file.exists():
+            await update.message.reply_text(f"⚠️ {google_maps_saver.login_status_message()}")
         
         status_message = await update.message.reply_text(
             "🔐 正在開啟瀏覽器...\n\n"

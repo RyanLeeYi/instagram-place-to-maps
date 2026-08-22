@@ -23,7 +23,9 @@ IG / Threads 美食貼文 → 本地 AI pipeline 擷取地點 → Google Places 
 
 ## 工作規則
 
-1. 一次只做一個 feature（看 `feature_list.json`，挑第一個 failing）
+1. 一次只推進一個 envelope（沒有 envelope 就是一條 feature，看 `feature_list.json` 挑第一個 failing）。
+   同 envelope 內的 slice 可同批實作，序列或平行皆可；平行需 `touches` 無交集且各自 worktree。
+   **驗收一律逐條、依 `prerequisites` 順序、各自 evidence**——上游改動會讓已通過的下游驗收失效
 2. feature 狀態只能 failing → passing，且必須附驗證證據（測試輸出／log 片段）
 3. 不做 feature_list 之外的事；發現該做的新事項 → 先加進 list 標 failing，不直接做
 4. session 結束前更新 `session-handoff.md`
