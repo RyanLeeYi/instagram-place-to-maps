@@ -23,34 +23,6 @@
       ]
     },
     {
-      "id": "F11",
-      "name": "IG 圖文貼文擷取（instaloader）",
-      "prerequisites": [
-        "F1"
-      ],
-      "acceptance": "以一則 /p/ 圖文貼文跑 download_post()，回傳 success=True 且取得圖片與 caption；若因上游 instaloader 問題失敗，錯誤訊息要指出是上游而非設定問題",
-      "status": "failing",
-      "evidence": null,
-      "signed_off": true,
-      "touches": [
-        "app/services/downloader.py"
-      ]
-    },
-    {
-      "id": "F12",
-      "name": "Threads 貼文與串文擷取",
-      "prerequisites": [
-        "F1"
-      ],
-      "acceptance": "以一則 Threads 串文跑 download_threads_post()，回傳串文各則的文字與媒體，數量與網頁上可見的則數一致",
-      "status": "failing",
-      "evidence": null,
-      "signed_off": true,
-      "touches": [
-        "app/services/downloader.py"
-      ]
-    },
-    {
       "id": "F13",
       "name": "重複 URL 去重",
       "prerequisites": [
@@ -63,63 +35,6 @@
       "touches": [
         "app/bot/handlers.py",
         "app/database/models.py"
-      ]
-    },
-    {
-      "id": "F14",
-      "name": "登入狀態要反映真實 session 而非檔案存在",
-      "prerequisites": [
-        "F8"
-      ],
-      "acceptance": "is_logged_in() 在 cookies 檔存在但 Google session 已失效時要回傳 False（或另提供 verify_session() 供呼叫端用）；以一份過期的 google_auth.json 重現，確認回傳 False 且訊息提示要重跑 /setup_google",
-      "status": "failing",
-      "evidence": "2026-07-25 發現：is_logged_in() 只檢查 auth_file.exists()，session 死了半年仍一路回報 True，是 F8 壞掉沒被察覺的第二層原因",
-      "signed_off": true,
-      "touches": [
-        "app/services/google_maps_saver.py",
-        "app/bot/handlers.py",
-        "tests/test_google_session.py"
-      ]
-    },
-    {
-      "id": "F15",
-      "name": "結果物件一致性測試改為自動掃描",
-      "prerequisites": [
-        "F9"
-      ],
-      "acceptance": "tests/test_maps_result.py 的一致性測試不再手維護清單，改成掃描 app/services/ 下所有 @dataclass 結果物件；新增一個沿用 message 命名的假結果物件時該測試要 fail",
-      "status": "failing",
-      "evidence": "2026-07-25 review LOW#6：目前 parametrize 只涵蓋 8 個結果物件中的 4 個（缺 DownloadResult、PostDownloadResult、VisualAnalysisResult、ImageAnalysisResult），測試名稱宣稱的不變量沒真的被釘住",
-      "signed_off": true,
-      "touches": [
-        "tests/test_maps_result.py"
-      ]
-    },
-    {
-      "id": "F16",
-      "name": "SaveResult/ListsResult 的 error_message 建構介面對稱",
-      "prerequisites": [
-        "F9"
-      ],
-      "acceptance": "SaveResult(success=False, status='failed', error_message='x') 這種寫法要嘛正常運作、要嘛給出明確錯誤訊息，不能是 TypeError/AttributeError；dataclasses.asdict() 要含得到失敗原因",
-      "status": "failing",
-      "evidence": "2026-07-25 review LOW#7：error_message 是唯讀 property，其他 service 是可傳入 field；日後新增失敗路徑照別處寫法會炸在失敗分支（最少被跑到的地方）",
-      "signed_off": true,
-      "touches": [
-        "app/services/google_maps_saver.py",
-        "tests/test_maps_result.py"
-      ]
-    },
-    {
-      "id": "F17",
-      "name": "init.ps1 不自行解析 .env",
-      "prerequisites": [],
-      "acceptance": "init.ps1 取模型名稱改為呼叫 app/config.py（例如 python -c 印出 settings 值），與 app 實際讀到的值必為同一份；.env 內有被註解掉的同名設定時仍取到正確值",
-      "status": "failing",
-      "evidence": "2026-07-25 review LOW#8：init.ps1 自行 regex 解析 .env，fallback 預設值與 .env.example 不一致且未錨定行首，會與 app/config.py 漂移，也繞過 ARCHITECTURE 的『只有 config.py 讀 env』邊界",
-      "signed_off": true,
-      "touches": [
-        "init.ps1"
       ]
     },
     {
@@ -154,6 +69,21 @@
         "app/services/place_extractor.py",
         "app/bot/handlers.py",
         "app/services/gemini_video.py"
+      ]
+    },
+    {
+      "id": "F23",
+      "name": "cleanup_post_images 跨目錄時會留下空資料夾",
+      "prerequisites": [
+        "F11",
+        "F12"
+      ],
+      "acceptance": "cleanup_post_images() 傳入橫跨多個暫存目錄的圖片路徑時，所有被清空的目錄都要被移除，不能只處理第一張圖所在的目錄；以兩個 post_*/threads_* 目錄各放數張圖重現，呼叫後兩個目錄都不存在",
+      "status": "failing",
+      "evidence": "2026-08-23 F11/F12 獨立驗收時附帶發現（不在該兩條 acceptance 範圍內，當時標 out-of-scope DEFER）：函式只對 image_paths[0].parent 做 rmdir，其餘目錄清空後留空資料夾累積在 temp_videos/",
+      "signed_off": false,
+      "touches": [
+        "app/services/downloader.py"
       ]
     }
   ]

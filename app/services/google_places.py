@@ -38,9 +38,13 @@ def name_similarity(expected: Optional[str], actual: Optional[str]) -> float:
     if a == b:
         return 1.0
     if a in b or b in a:
-        # 包含關係：以較短者佔較長者的比例當分數，最低 0.8
+        # 包含關係：以較短者佔較長者的比例當分數。
+        # 這裡曾經寫 max(0.8, ratio)，等於「只要包含就是 HIGH」——ratio 是死的。
+        # 於是『巫婆水餃店』對上『水餃店』甚至『水餃』都判 high，而那顯然不是同一家
+        # （2026-08-23 實測三者同分 0.80）。改成 MEDIUM 保底：包含關係至少算「部分吻合」，
+        # 但要涵蓋到 SIMILARITY_HIGH 的比例才敢說是同一家。
         ratio = min(len(a), len(b)) / max(len(a), len(b))
-        return max(0.8, ratio)
+        return max(SIMILARITY_MEDIUM, ratio)
     return SequenceMatcher(None, a, b).ratio()
 
 

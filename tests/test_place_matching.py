@@ -22,6 +22,32 @@ class Test名稱相似度:
         # LLM 給「巫婆水餃店」、Google 收錄「巫婆水餃」——同一家
         assert name_similarity("巫婆水餃店", "巫婆水餃") >= 0.8
 
+    def test_通用詞被包含時不得算同一家(self):
+        """核心回歸：包含關係曾經一律給 0.8，等於「只要包含就是 high」。
+
+        『水餃店』『水餃』是品類不是店名，卻與『巫婆水餃』拿到同分——
+        於是隨便一家水餃店都會被靜默採信為巫婆水餃（2026-08-23 實測）。
+        """
+        from app.services.google_places import SIMILARITY_HIGH
+
+        同一家 = name_similarity("巫婆水餃店", "巫婆水餃")
+        只是品類 = name_similarity("巫婆水餃店", "水餃店")
+        更空泛 = name_similarity("巫婆水餃店", "水餃")
+
+        assert 同一家 >= SIMILARITY_HIGH
+        assert 只是品類 < SIMILARITY_HIGH
+        assert 更空泛 < SIMILARITY_HIGH
+        assert 只是品類 < 同一家
+
+    def test_包含關係不會掉到低信心區(self):
+        """包含關係仍是「部分吻合」，不該跟完全抓錯的店家同級。"""
+        from app.services.google_places import SIMILARITY_MEDIUM
+
+        assert name_similarity("鹿邊燒肉", "鹿邊燒肉專門店") >= SIMILARITY_MEDIUM
+        assert name_similarity("巫婆水餃店", "水餃") >= SIMILARITY_MEDIUM
+        # 完全不同的店家仍要落在低信心區
+        assert name_similarity("巫婆水餃店", "芳芳江蘇水餃") < SIMILARITY_MEDIUM
+
     def test_不同店家算低相似(self):
         # 這就是 2026-07-25 抓錯的那組
         assert name_similarity("巫婆水餃店", "芳芳江蘇水餃") < 0.6
