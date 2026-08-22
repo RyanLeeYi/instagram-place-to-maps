@@ -15,7 +15,12 @@
       ],
       "acceptance": "從 Telegram 傳一則 IG Reel 連結給 bot，5 分鐘內收到含地點名稱與 Google Maps 連結的回覆，且 SQLite places 表新增對應筆數",
       "status": "failing",
-      "evidence": null
+      "evidence": null,
+      "signed_off": true,
+      "touches": [
+        "app/bot/handlers.py",
+        "app/main.py"
+      ]
     },
     {
       "id": "F11",
@@ -25,7 +30,11 @@
       ],
       "acceptance": "以一則 /p/ 圖文貼文跑 download_post()，回傳 success=True 且取得圖片與 caption；若因上游 instaloader 問題失敗，錯誤訊息要指出是上游而非設定問題",
       "status": "failing",
-      "evidence": null
+      "evidence": null,
+      "signed_off": true,
+      "touches": [
+        "app/services/downloader.py"
+      ]
     },
     {
       "id": "F12",
@@ -35,7 +44,11 @@
       ],
       "acceptance": "以一則 Threads 串文跑 download_threads_post()，回傳串文各則的文字與媒體，數量與網頁上可見的則數一致",
       "status": "failing",
-      "evidence": null
+      "evidence": null,
+      "signed_off": true,
+      "touches": [
+        "app/services/downloader.py"
+      ]
     },
     {
       "id": "F13",
@@ -45,7 +58,12 @@
       ],
       "acceptance": "同一則連結連傳兩次，第二次 bot 回覆已處理過並附上既有紀錄，SQLite places 表不新增重複筆數（依 docs/telegram-deduplication.md）",
       "status": "failing",
-      "evidence": null
+      "evidence": null,
+      "signed_off": true,
+      "touches": [
+        "app/bot/handlers.py",
+        "app/database/models.py"
+      ]
     },
     {
       "id": "F14",
@@ -55,7 +73,13 @@
       ],
       "acceptance": "is_logged_in() 在 cookies 檔存在但 Google session 已失效時要回傳 False（或另提供 verify_session() 供呼叫端用）；以一份過期的 google_auth.json 重現，確認回傳 False 且訊息提示要重跑 /setup_google",
       "status": "failing",
-      "evidence": "2026-07-25 發現：is_logged_in() 只檢查 auth_file.exists()，session 死了半年仍一路回報 True，是 F8 壞掉沒被察覺的第二層原因"
+      "evidence": "2026-07-25 發現：is_logged_in() 只檢查 auth_file.exists()，session 死了半年仍一路回報 True，是 F8 壞掉沒被察覺的第二層原因",
+      "signed_off": true,
+      "touches": [
+        "app/services/google_maps_saver.py",
+        "app/bot/handlers.py",
+        "tests/test_google_session.py"
+      ]
     },
     {
       "id": "F15",
@@ -65,7 +89,11 @@
       ],
       "acceptance": "tests/test_maps_result.py 的一致性測試不再手維護清單，改成掃描 app/services/ 下所有 @dataclass 結果物件；新增一個沿用 message 命名的假結果物件時該測試要 fail",
       "status": "failing",
-      "evidence": "2026-07-25 review LOW#6：目前 parametrize 只涵蓋 8 個結果物件中的 4 個（缺 DownloadResult、PostDownloadResult、VisualAnalysisResult、ImageAnalysisResult），測試名稱宣稱的不變量沒真的被釘住"
+      "evidence": "2026-07-25 review LOW#6：目前 parametrize 只涵蓋 8 個結果物件中的 4 個（缺 DownloadResult、PostDownloadResult、VisualAnalysisResult、ImageAnalysisResult），測試名稱宣稱的不變量沒真的被釘住",
+      "signed_off": true,
+      "touches": [
+        "tests/test_maps_result.py"
+      ]
     },
     {
       "id": "F16",
@@ -75,7 +103,12 @@
       ],
       "acceptance": "SaveResult(success=False, status='failed', error_message='x') 這種寫法要嘛正常運作、要嘛給出明確錯誤訊息，不能是 TypeError/AttributeError；dataclasses.asdict() 要含得到失敗原因",
       "status": "failing",
-      "evidence": "2026-07-25 review LOW#7：error_message 是唯讀 property，其他 service 是可傳入 field；日後新增失敗路徑照別處寫法會炸在失敗分支（最少被跑到的地方）"
+      "evidence": "2026-07-25 review LOW#7：error_message 是唯讀 property，其他 service 是可傳入 field；日後新增失敗路徑照別處寫法會炸在失敗分支（最少被跑到的地方）",
+      "signed_off": true,
+      "touches": [
+        "app/services/google_maps_saver.py",
+        "tests/test_maps_result.py"
+      ]
     },
     {
       "id": "F17",
@@ -83,7 +116,11 @@
       "prerequisites": [],
       "acceptance": "init.ps1 取模型名稱改為呼叫 app/config.py（例如 python -c 印出 settings 值），與 app 實際讀到的值必為同一份；.env 內有被註解掉的同名設定時仍取到正確值",
       "status": "failing",
-      "evidence": "2026-07-25 review LOW#8：init.ps1 自行 regex 解析 .env，fallback 預設值與 .env.example 不一致且未錨定行首，會與 app/config.py 漂移，也繞過 ARCHITECTURE 的『只有 config.py 讀 env』邊界"
+      "evidence": "2026-07-25 review LOW#8：init.ps1 自行 regex 解析 .env，fallback 預設值與 .env.example 不一致且未錨定行首，會與 app/config.py 漂移，也繞過 ARCHITECTURE 的『只有 config.py 讀 env』邊界",
+      "signed_off": true,
+      "touches": [
+        "init.ps1"
+      ]
     },
     {
       "id": "F18",
@@ -93,7 +130,13 @@
       ],
       "acceptance": "search_place 取多筆候選（maxResultCount >= 5）並在候選中挑選，回傳結果帶 match_confidence（high/medium/low）與被採用的候選名稱；LLM 抓到的店名與採用店名相似度低於門檻時必須標 low 而非靜默回傳。回歸測試：以『巫婆水餃店 台北 北投』查詢，結果要嘛是巫婆水餃、要嘛 match_confidence=low，不得像 2026-07-25 那樣靜默回傳『芳芳江蘇水餃』且 found=True。Telegram 回覆對 low 信心要標示需人工確認",
       "status": "failing",
-      "evidence": "2026-07-25 發現：google_places.py:127-133 用 maxResultCount=1、無 locationBias、無名稱驗證，直接採信第一筆。實測同一支影片兩次跑出兩個不同的錯誤店家（芳芳江蘇水餃 / 丫頭水餃），而逐字稿明確講的是巫婆水餃"
+      "evidence": "2026-07-25 發現：google_places.py:127-133 用 maxResultCount=1、無 locationBias、無名稱驗證，直接採信第一筆。實測同一支影片兩次跑出兩個不同的錯誤店家（芳芳江蘇水餃 / 丫頭水餃），而逐字稿明確講的是巫婆水餃",
+      "signed_off": true,
+      "touches": [
+        "app/services/google_places.py",
+        "app/bot/handlers.py",
+        "tests/test_place_matching.py"
+      ]
     },
     {
       "id": "F22",
@@ -105,7 +148,13 @@
       ],
       "acceptance": "pipeline 同時取得本地候選（逐字稿+幀描述）與 Gemini 候選（影片理解），合併去重後由 LLM 依逐字稿/caption 判定哪些是『作者在推薦的店家』，只有這些進 Places 驗證與入庫。回歸案例兩條都要過：(a) DT2w2PVgXo3 要留下巫婆水餃、濾掉蔡元益紅茶等路過招牌；(b) 酒場清志郎那支（店名只在招牌上）要留下該店。Gemini 側失敗（權限/逾時/額度）時必須降級為只用本地結果、pipeline 不得中斷，並在回覆標示來源",
       "status": "failing",
-      "evidence": null
+      "evidence": null,
+      "signed_off": true,
+      "touches": [
+        "app/services/place_extractor.py",
+        "app/bot/handlers.py",
+        "app/services/gemini_video.py"
+      ]
     }
   ]
 }
