@@ -169,6 +169,42 @@ class PlaceBotHandlers:
             return "threads"
         return "unknown"
     
+    @staticmethod
+    def _format_existing_places(places: list) -> str:
+        """把既有紀錄組成 MarkdownV2 回覆（F13）。"""
+        lines = [f"這則連結已經處理過了，既有 {len(places)} 筆紀錄：", ""]
+        for i, place in enumerate(places, 1):
+            line = f"{i}\\. *{escape_markdown(place.name)}*"
+            if place.city:
+                line += f" ({escape_markdown(place.city)})"
+            lines.append(line)
+            if place.google_maps_url:
+                # 連結目的地只需要跳脫 ')' 與 '\'；整條套 escape_markdown 會把
+                # 網址裡的 '.' 也加上反斜線，變成一條連不上的網址
+                url = place.google_maps_url.replace("\\", "\\\\").replace(")", "\\)")
+                lines.append(f"    [Google Maps]({url})")
+        return "\n".join(lines)
+
+    async def _find_places_by_url(self, url: str) -> list:
+        """這則連結先前已經存過的地點；空 list 代表沒處理過（F13）。
+
+        比對用貼文 ID 而不是整條 URL——同一支 Reel 從 IG app 分享出來每次都帶
+        不同的 ?igsh= 追蹤參數，字串比對會把它當成新的一則。
+        """
+        post_id = self.downloader.extract_post_id(url)
+        if not post_id:
+            return []
+
+        from sqlalchemy import select
+
+        async with async_session() as session:
+            result = await session.execute(
+                select(Place)
+                .where(Place.source_url.contains(post_id))
+                .order_by(Place.created_at.desc())
+            )
+            return list(result.scalars().all())
+
     def _extract_url(self, text: str) -> Optional[str]:
         """從訊息中擷取 Instagram 或 Threads URL"""
         # 先嘗試 Instagram 標準格式
@@ -771,6 +807,19 @@ class PlaceBotHandlers:
         platform = self._get_platform(extracted_url)
         url_type = self._get_url_type(extracted_url)
         logger.info(f"訊息 {message_id} 包含連結: {extracted_url} (平台: {platform}, 類型: {url_type})")
+        
+        # 這則連結處理過就直接回既有紀錄，不重跑整條 pipeline（F13）
+        existing = await self._find_places_by_url(extracted_url)
+        if existing:
+            logger.info(f"連結 {extracted_url} 已處理過，回傳既有 {len(existing)} 筆紀錄")
+            await safe_reply_text(
+                update.message,
+                self._format_existing_places(existing),
+                parse_mode="MarkdownV2",
+                disable_web_page_preview=True,
+            )
+            self._processing_messages.discard(message_id)
+            return
         
         # 開始處理（使用安全的回覆方法，帶重試機制）
         status_message = await safe_reply_text(update.message, "⏳ 正在處理...")
