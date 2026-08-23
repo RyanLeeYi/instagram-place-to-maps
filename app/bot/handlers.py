@@ -14,6 +14,7 @@ from app.services.downloader import InstagramDownloader, DownloadResult
 from app.services.transcriber import WhisperTranscriber
 from app.services.visual_analyzer import VideoVisualAnalyzer
 from app.services.place_extractor import PlaceExtractor, PlaceInfo, ExtractionResult
+from app.services.gemini_video import GeminiVideoExtractor
 from app.services.google_places import GooglePlacesService
 from app.services.google_sheets import GoogleSheetsService
 from app.services.google_maps_saver import google_maps_saver, SaveResult
@@ -136,6 +137,7 @@ class PlaceBotHandlers:
         self.transcriber = WhisperTranscriber()
         self.visual_analyzer = VideoVisualAnalyzer()
         self.place_extractor = PlaceExtractor()
+        self.gemini_video = GeminiVideoExtractor(timeout=settings.gemini_video_timeout)
         self.places_service = GooglePlacesService()
         self.sheets_service = GoogleSheetsService()
     
@@ -787,6 +789,7 @@ class PlaceBotHandlers:
             visual_description = ""
             post_caption = ""
             source_title = ""
+            gemini_result = None  # 只有影片流程會跑 Gemini；圖文貼文沒有 mp4 可讀
             
             if url_type == "threads":
                 # === Threads 貼文處理流程 ===
@@ -985,7 +988,7 @@ class PlaceBotHandlers:
                 if video_caption:
                     logger.info(f"取得影片說明文，長度: {len(video_caption)} 字元")
                 
-                # 語音轉文字 + 視覺分析（並行處理）
+                # 語音轉文字 + 視覺分析 + Gemini 影片理解（並行處理）
                 await safe_edit_message(status_message, "🎤👁️ 正在分析語音與畫面...")
                 
                 # 建立並行任務
@@ -995,10 +998,15 @@ class PlaceBotHandlers:
                 visual_task = asyncio.create_task(
                     self.visual_analyzer.analyze(download_result.video_path)
                 )
+                # 第二來源：Gemini 直接讀 mp4，補招牌上才有的店名。
+                # 它自帶降級（失敗回 success=False），所以不必包 try。
+                gemini_task = asyncio.create_task(
+                    self.gemini_video.extract(download_result.video_path)
+                )
                 
-                # 等待兩個任務完成
-                transcript_result, visual_result = await asyncio.gather(
-                    transcript_task, visual_task
+                # 等待三個任務完成
+                transcript_result, visual_result, gemini_result = await asyncio.gather(
+                    transcript_task, visual_task, gemini_task
                 )
                 
                 transcript = transcript_result.transcript if transcript_result.success else ""
@@ -1012,7 +1020,8 @@ class PlaceBotHandlers:
                 transcript=transcript,
                 visual_description=visual_description,
                 ig_account=source_title,
-                caption=post_caption  # 傳入貼文/影片說明文
+                caption=post_caption,  # 傳入貼文/影片說明文
+                gemini_places=gemini_result.places if (gemini_result and gemini_result.success) else None,
             )
             
             if not extraction_result.found:
@@ -1213,6 +1222,17 @@ class PlaceBotHandlers:
                     
                     lines.append("")
             
+            # 標示這次的擷取來源：Gemini 降級時要說出來，不然使用者看不出
+            # 「招牌上才有的店名」這條線這次根本沒跑（F22）
+            if gemini_result is not None:
+                if gemini_result.success:
+                    lines.append(escape_markdown("來源：本地分析 + Gemini 影片理解"))
+                else:
+                    lines.append(
+                        "來源：僅本地分析（Gemini 影片理解未生效："
+                        f"{escape_markdown(gemini_result.error_message or '未知原因')}）"
+                    )
+
             if self.sheets_service.is_configured():
                 lines.append("📊 已同步到 Google Sheets")
             

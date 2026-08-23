@@ -91,6 +91,9 @@ class PlaceExtractor:
 【來源帳號】
 {ig_account}
 
+【Gemini 影片理解讀到的店家候選】
+{gemini_candidates}
+
 注意：
 1. 一篇貼文/影片可能包含多個地點（例如美食推薦合集、多店家介紹等），請擷取所有提到的地點。
 2. 貼文說明文通常包含店家名稱、地址、營業時間等重要資訊，請優先參考。
@@ -131,17 +134,42 @@ class PlaceExtractor:
    - high: 明確看到/聽到名稱，且有地點線索
    - medium: 有名稱但地點不確定，或有地點但名稱模糊
    - low: 只能推測，資訊不完整
-8. 如果內容介紹多個地點，全部列出（例如「台北5家必吃拉麵」應列出5個地點）"""
+8. 如果內容介紹多個地點，全部列出（例如「台北5家必吃拉麵」應列出5個地點）
+9. 【Gemini 候選】是另一個模型直接看影片讀到的招牌文字。它補得到語音沒講、
+   畫面描述也漏掉的店名，但它也會把路過的隔壁攤、菜單橫幅、街景招牌一起讀進來。
+   請把它與語音/畫面的線索合併去重，然後**只保留「作者在推薦的店家」**：
+   - 語音或說明文在講它 → 保留
+   - 語音完全沒提，但它被標記為「影片主要拍攝對象」 → 保留（店名只寫在招牌上的情況）
+   - 只是背景帶到的招牌、隔壁攤、菜單橫幅、路牌 → 不要列入 places
+   判不出來的就不要列，寧可漏也不要塞進一間作者根本沒推薦的店。"""
 
     def __init__(self):
         self.model = settings.ollama_model
     
+    @staticmethod
+    def format_gemini_candidates(gemini_places: Optional[List] = None) -> str:
+        """把 Gemini 讀到的候選攤平成 prompt 用的一段文字。
+
+        沒有候選時明說「無」——空字串會讓 LLM 自己腦補這一區在講什麼。
+        """
+        if not gemini_places:
+            return "（無，本次只有本地來源）"
+        return "\n".join(
+            "- {name}（{flag}）{reason}".format(
+                name=p.name,
+                flag="影片主要拍攝對象" if p.is_recommended else "只是畫面中出現",
+                reason=f"：{p.reason}" if p.reason else "",
+            )
+            for p in gemini_places
+        )
+
     async def extract(
         self,
         transcript: str,
         visual_description: str,
         ig_account: Optional[str] = None,
-        caption: Optional[str] = None
+        caption: Optional[str] = None,
+        gemini_places: Optional[List] = None,
     ) -> ExtractionResult:
         """
         從影片內容擷取地點資訊
@@ -151,6 +179,7 @@ class PlaceExtractor:
             visual_description: 視覺分析結果
             ig_account: IG 帳號名稱（可能包含地點線索）
             caption: 貼文說明文（通常包含店家名稱、地址等重要資訊）
+            gemini_places: Gemini 影片理解讀到的候選（GeminiPlace），沒有就只用本地來源
             
         Returns:
             ExtractionResult: 擷取結果（可能包含多個地點）
@@ -161,7 +190,8 @@ class PlaceExtractor:
             caption=caption or "（無貼文說明）",
             transcript=transcript or "（無語音內容）",
             visual_description=visual_description or "（無畫面描述）",
-            ig_account=ig_account or "（未知）"
+            ig_account=ig_account or "（未知）",
+            gemini_candidates=self.format_gemini_candidates(gemini_places),
         )
         
         try:

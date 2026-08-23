@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     playwright_delay_min: float = Field(default=2.0, env="PLAYWRIGHT_DELAY_MIN")
     playwright_delay_max: float = Field(default=5.0, env="PLAYWRIGHT_DELAY_MAX")
 
+    # Gemini 影片理解（Antigravity CLI）——本地擷取之外的第二來源，失敗時降級
+    gemini_video_enabled: bool = Field(default=True, env="GEMINI_VIDEO_ENABLED")
+    agy_command: str = Field(default="agy", env="AGY_COMMAND")
+    gemini_video_timeout: int = Field(default=240, env="GEMINI_VIDEO_TIMEOUT")
+
     @property
     def allowed_chat_ids(self) -> List[str]:
         """解析允許的 chat_id 列表"""
