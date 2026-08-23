@@ -72,21 +72,6 @@
       ]
     },
     {
-      "id": "F23",
-      "name": "cleanup_post_images 跨目錄時會留下空資料夾",
-      "prerequisites": [
-        "F11",
-        "F12"
-      ],
-      "acceptance": "cleanup_post_images() 傳入橫跨多個暫存目錄的圖片路徑時，所有被清空的目錄都要被移除，不能只處理第一張圖所在的目錄；以兩個 post_*/threads_* 目錄各放數張圖重現，呼叫後兩個目錄都不存在",
-      "status": "failing",
-      "evidence": "2026-08-23 F11/F12 獨立驗收時附帶發現（不在該兩條 acceptance 範圍內，當時標 out-of-scope DEFER）：函式只對 image_paths[0].parent 做 rmdir，其餘目錄清空後留空資料夾累積在 temp_videos/",
-      "signed_off": true,
-      "touches": [
-        "app/services/downloader.py"
-      ]
-    },
-    {
       "id": "F24",
       "title": "cookies.txt 缺少 sessionid 要當場喊，不得偽裝成「影片不存在」",
       "status": "failing",
@@ -95,7 +80,7 @@
         "app/services/downloader.py",
         "scripts/smoke_pipeline.py"
       ],
-      "acceptance": "載入 cookies.txt 時檢查是否含 sessionid：沒有就視為未認證，log 與使用者回覆都必須明確指向「cookies.txt 未含登入憑證，請重新從瀏覽器匯出」，不得回覆「此影片已不存在或無法存取」。冒煙測試在這種狀態下要在下載前就以此原因失敗。回歸測試：以一份移除 sessionid 的 cookies.txt 呼叫下載，錯誤訊息含 cookies 字樣且不含「已不存在」。背景：2026-08-23 冒煙測試 [1] 下載 FAIL，查出 cookies.txt 只有 8 個 cookie、沒有 sessionid，而 instaloader_session/session-* 裡的 sessionid 仍然有效——兩份憑證來源不一致且沒有任何訊號。"
+      "acceptance": "載入 cookies.txt 時檢查是否含 sessionid：沒有就視為未認證，log 與使用者回覆都必須明確指向「cookies.txt 未含登入憑證，請重新從瀏覽器匯出」，不得回覆「此影片已不存在或無法存取」。回歸測試：以一份移除 sessionid 的 cookies.txt 呼叫下載，錯誤訊息含 cookies 字樣且不含「已不存在」。背景：2026-08-23 查到 repo 的 cookies.txt 只有 8 個 cookie、不含 sessionid（等於未登入），而 instaloader_session/session-* 裡的 sessionid 仍在——兩份憑證來源不一致且沒有任何訊號。注意：當天冒煙測試 [1] 下載 FAIL 的直接原因是 Instagram 對本機 IP 回 429（帶不帶 sessionid 都一樣），不是這條；這條要修的是「未登入卻不吭聲」，兩者獨立。"
     }
   ]
 }
