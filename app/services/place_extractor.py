@@ -145,7 +145,11 @@ class PlaceExtractor:
    - 標記為「只是畫面中出現」，而且語音與說明文都沒提到它 → 不要列入 places
      （路過的隔壁攤、菜單橫幅、街景招牌、路牌屬於這一類）
    注意：如果合併之後 places 變成空的，那幾乎一定是判太嚴了。
-   語音講了某間店、或 Gemini 標了主要拍攝對象，就至少要留下那一間。"""
+   語音講了某間店、或 Gemini 標了主要拍攝對象，就至少要留下那一間。
+10. 去重要看「是不是同一家店」，不是「字串一不一樣」。同一家店的中文名、英文名、
+   招牌全名（例如「美軍炸雞」與「Padam Padam 1970」與「Padam Padam 1970 美軍炸雞」）
+   **只能出現一筆**：挑最完整的當 name，其餘寫進 name_en 或 search_keywords。
+   兩個名字指同一家店卻各列一筆，會在 Google Maps 清單裡存成兩個地點。"""
 
     def __init__(self):
         self.model = settings.ollama_model
