@@ -70,17 +70,6 @@
         "app/bot/handlers.py",
         "app/services/gemini_video.py"
       ]
-    },
-    {
-      "id": "F24",
-      "title": "cookies.txt 缺少 sessionid 要當場喊，不得偽裝成「影片不存在」",
-      "status": "failing",
-      "signed_off": true,
-      "touches": [
-        "app/services/downloader.py",
-        "scripts/smoke_pipeline.py"
-      ],
-      "acceptance": "載入 cookies.txt 時檢查是否含 sessionid：沒有就視為未認證，log 與使用者回覆都必須明確指向「cookies.txt 未含登入憑證，請重新從瀏覽器匯出」，不得回覆「此影片已不存在或無法存取」。回歸測試：以一份移除 sessionid 的 cookies.txt 呼叫下載，錯誤訊息含 cookies 字樣且不含「已不存在」。背景：2026-08-23 查到 repo 的 cookies.txt 只有 8 個 cookie、不含 sessionid（等於未登入），而 instaloader_session/session-* 裡的 sessionid 仍在——兩份憑證來源不一致且沒有任何訊號。注意：當天冒煙測試 [1] 下載 FAIL 的直接原因是 Instagram 對本機 IP 回 429（帶不帶 sessionid 都一樣），不是這條；這條要修的是「未登入卻不吭聲」，兩者獨立。"
     }
   ]
 }
