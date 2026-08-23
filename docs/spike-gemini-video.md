@@ -73,3 +73,46 @@ Gemini：影片原生理解（招牌 OCR 為主）──┘        ↓
 ## 限制
 
 n=5（加單獨測試 1 支）。店家型態偏台灣小吃／市場，未涵蓋連鎖店、無招牌店、外語招牌。判定「哪個答案正確」由 Ryan 人工認定，非盲測。
+
+---
+
+## 2026-08-23 追記｜正式接入（F22）時實測到的三件事
+
+接入版本是 agy **1.1.19**（spike 當時 1.1.7、上一輪查證是 1.1.12）。
+
+### 1. `read_file` 的權限比對只認一字不差的絕對路徑
+
+`permissions.allow` 裡的萬用字元在 Windows 路徑上**完全不生效**。實測全部被拒：
+
+| 寫法 | 結果 |
+|---|---|
+| `read_file(C:\...\SideProject\*)` | 拒 |
+| `read_file(C:\...\SideProject\**)` | 拒 |
+| `read_file(C:/.../SideProject/**)` | 拒 |
+| `read_file(C:\...\temp_videos\*)` | 拒 |
+| `read_file(C:\...\temp_videos\*.mp4)` | 拒 |
+| `read_file(*)` | **放行**（等於整台機器可讀） |
+| `read_file(C:\...\temp_videos\f7f8cb59_video.mp4)`（完整路徑） | **放行** |
+
+所以上一輪handoff寫的「路徑落在 `SideProject\*` glob 內就可以」在 1.1.19 已經不成立——
+那份設定現在一個檔案都放行不了。
+
+**因應**：`GeminiVideoExtractor` 固定用 `temp_videos\agy_input.mp4` 這個檔名，
+每次呼叫前把當前影片複製過去，`settings.json` 只登記這一個完整路徑。
+權限面最小，也不受 glob 語法漂移影響。代價是同時只能處理一支影片（已加 lock）。
+
+### 2. 「它自己改走 shell」的失敗模式還在，比例約 1/4
+
+4 支影片實測 3 成功、1 失敗。失敗那支 agy 決定跑 `python -c "import cv2..."` 去讀影片長度，
+被權限引擎擋下 → `status=ERROR`。這正是 spike 當初 5 支失敗 1 支的同一個東西，
+**沒有因為版本更新而消失**，所以降級路徑是常態不是例外。
+
+### 3. 耗時比上一輪慢
+
+上一輪量到 8-12 秒；這次 9-67 秒（同一支影片 `f7f8cb59` 分別量到 9.0s 與 67.3s）。
+timeout 因此設 240 秒。
+
+### 接入後的判讀規則（不變，且更重要）
+
+`status != "SUCCESS"` 就整份丟掉，**連 `response` 都不要看**。
+回歸測試在 `tests/test_gemini_video.py`。
