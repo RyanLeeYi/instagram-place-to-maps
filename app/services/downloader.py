@@ -93,11 +93,25 @@ class InstagramDownloader:
     # cookies 檔案路徑
     COOKIES_FILE = Path("cookies.txt")
 
+    # 沒有這個 cookie 就是沒登入，其餘 cookie 再多也一樣
+    SESSION_COOKIE = "sessionid"
+
+    # Instagram 對「未登入」與「影片真的被刪了」回同一句話，照字面翻譯會把
+    # 設定問題講成內容問題。cookies 少了 sessionid 是本機看得出來的事實，
+    # 就用它來蓋掉那個猜測。
+    UNAUTHENTICATED_HINT = (
+        "設定問題：cookies.txt 未含登入憑證（sessionid），等於未登入，"
+        "請重新從瀏覽器匯出 cookies.txt。"
+    )
+
     def __init__(self):
         self.temp_dir = settings.temp_video_path
         self.session_dir = settings.instaloader_session_path
         self._working_browser: Optional[str] = None
         self._cookies_file: Optional[Path] = self._find_cookies_file()
+        self._cookies_authenticated: bool = self._cookies_have_session(self._cookies_file)
+        if self._cookies_file and not self._cookies_authenticated:
+            logger.warning(f"⚠️ {self.UNAUTHENTICATED_HINT}")
         self._instaloader: Optional[instaloader.Instaloader] = None
         self._instaloader_username: Optional[str] = None
     
@@ -107,6 +121,12 @@ class InstagramDownloader:
             logger.info(f"✅ 找到 Instagram cookies 檔案: {self.COOKIES_FILE.absolute()}")
             return self.COOKIES_FILE
         return None
+
+    def _cookies_have_session(self, cookie_file: Optional[Path]) -> bool:
+        """cookies.txt 帶不帶得動登入身分，載入當下就判定，不等下載失敗才猜。"""
+        if cookie_file is None:
+            return False
+        return bool(self._load_cookies_from_netscape(cookie_file).get(self.SESSION_COOKIE))
     
     def _get_cookies_path_for_url(self, url: str) -> Optional[Path]:
         """根據 URL 回傳對應的 cookies 檔案路徑"""
@@ -252,8 +272,15 @@ class InstagramDownloader:
         raw = str(error) or error.__class__.__name__
 
         if not self._instaloader_username:
+            # 「沒有 sessionid」與「sessionid 過期」是不同的事，能分就分——
+            # 前者是本機看得出來的事實，後者才是猜的。
+            cause = (
+                "cookies.txt 未含登入憑證（sessionid）"
+                if not self._cookies_authenticated
+                else "cookies.txt 的 session 已失效或過期"
+            )
             return (
-                "設定問題：Instagram 未通過認證——cookies.txt 的 session 已失效或過期，"
+                f"設定問題：Instagram 未通過認證——{cause}，"
                 "未認證只抓得到公開內容，且會被 Instagram 擋下。"
                 f"請重新從瀏覽器匯出 cookies.txt。（原始錯誤：{raw}）"
             )
@@ -481,28 +508,32 @@ class InstagramDownloader:
                 )
 
         except yt_dlp.utils.DownloadError as e:
-            error_msg = str(e)
-            if "Private" in error_msg or "private" in error_msg:
-                return DownloadResult(
-                    success=False,
-                    error_message="此影片為私人影片，無法下載",
-                )
-            elif "not available" in error_msg.lower():
-                return DownloadResult(
-                    success=False,
-                    error_message="此影片已不存在或無法存取",
-                )
-            else:
-                return DownloadResult(
-                    success=False,
-                    error_message=f"下載失敗: {error_msg}",
-                )
+            return DownloadResult(
+                success=False,
+                error_message=self._explain_ytdlp_error(str(e)),
+            )
 
         except Exception as e:
             return DownloadResult(
                 success=False,
                 error_message=f"下載時發生錯誤: {str(e)}",
             )
+
+    def _explain_ytdlp_error(self, error_msg: str) -> str:
+        """把 yt-dlp 的下載錯誤翻成使用者能據以行動的一句話。"""
+        if "private" in error_msg.lower():
+            return "此影片為私人影片，無法下載"
+
+        # 未登入時 Instagram 一律回 not available，跟影片被刪無法區分——
+        # 但我們本來就知道自己沒登入，先講這件事。
+        if not self._cookies_authenticated:
+            logger.error(f"{self.UNAUTHENTICATED_HINT}（原始錯誤：{error_msg}）")
+            return f"{self.UNAUTHENTICATED_HINT}（原始錯誤：{error_msg}）"
+
+        if "not available" in error_msg.lower():
+            return "此影片已不存在或無法存取"
+
+        return f"下載失敗: {error_msg}"
 
     async def cleanup(self, file_path: Path) -> None:
         """清理暫存檔案"""
