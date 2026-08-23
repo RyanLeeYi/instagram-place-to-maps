@@ -75,7 +75,7 @@
       "id": "F24",
       "title": "cookies.txt 缺少 sessionid 要當場喊，不得偽裝成「影片不存在」",
       "status": "failing",
-      "signed_off": false,
+      "signed_off": true,
       "touches": [
         "app/services/downloader.py",
         "scripts/smoke_pipeline.py"
