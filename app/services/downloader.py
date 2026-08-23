@@ -666,10 +666,9 @@ class InstagramDownloader:
             except Exception as e:
                 logger.warning(f"刪除暫存圖片失敗: {e}")
         
-        # 嘗試刪除目錄
-        if image_paths:
+        # 嘗試刪除目錄（image_paths 可能橫跨多個暫存目錄，全部都要清）
+        for parent_dir in dict.fromkeys(p.parent for p in image_paths if p):
             try:
-                parent_dir = image_paths[0].parent
                 if parent_dir.exists() and not any(parent_dir.iterdir()):
                     parent_dir.rmdir()
                     logger.debug(f"已刪除暫存目錄: {parent_dir}")
