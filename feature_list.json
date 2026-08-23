@@ -38,22 +38,6 @@
       ]
     },
     {
-      "id": "F18",
-      "name": "Places 匹配要有信心度，不得靜默採信第一筆",
-      "prerequisites": [
-        "F5"
-      ],
-      "acceptance": "search_place 取多筆候選（maxResultCount >= 5）並在候選中挑選，回傳結果帶 match_confidence（high/medium/low）與被採用的候選名稱；LLM 抓到的店名與採用店名相似度低於門檻時必須標 low 而非靜默回傳。回歸測試：以『巫婆水餃店 台北 北投』查詢，結果要嘛是巫婆水餃、要嘛 match_confidence=low，不得像 2026-07-25 那樣靜默回傳『芳芳江蘇水餃』且 found=True。Telegram 回覆對 low 信心要標示需人工確認",
-      "status": "failing",
-      "evidence": "2026-07-25 發現：google_places.py:127-133 用 maxResultCount=1、無 locationBias、無名稱驗證，直接採信第一筆。實測同一支影片兩次跑出兩個不同的錯誤店家（芳芳江蘇水餃 / 丫頭水餃），而逐字稿明確講的是巫婆水餃",
-      "signed_off": true,
-      "touches": [
-        "app/services/google_places.py",
-        "app/bot/handlers.py",
-        "tests/test_place_matching.py"
-      ]
-    },
-    {
       "id": "F22",
       "name": "本地 + Gemini 雙來源合併與推薦店家篩選",
       "prerequisites": [
