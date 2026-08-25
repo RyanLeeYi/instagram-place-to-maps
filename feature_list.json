@@ -17,6 +17,19 @@
         "app/bot/handlers.py",
         "app/services/gemini_video.py"
       ]
+    },
+    {
+      "id": "F25",
+      "name": "Threads 分享短連結（/share/）支援",
+      "prerequisites": [],
+      "acceptance": "使用者貼上 Threads 分享短連結（threads.net 或 threads.com 的 /share/<id> 形式）時，pipeline 能正常處理，行為與貼上正規連結（@user/post/<id>）完全一致。\n作法：解析前先跟隨 HTTP 轉址取得正規網址，再交給既有解析邏輯；轉址失敗時回傳明確錯誤訊息，不得沿用現在的「無法解析此連結，請確認是否為有效的 Threads 連結」——那句話會讓使用者以為是自己貼錯，屬於與 F24 同型的誤導性錯誤訊息。\n回歸案例：\n(a) https://www.threads.com/share/DJ4GTzoS2/ 要解析成 @mooqi_eat/post/DLRnLRfSqvX（實測 thread_mixed）\n(b) https://www.threads.com/share/DZPznCtey/ 要解析成 @mooqi_eat/post/DLRnCYQSqsJ（實測 post_carousel）\n(c) 既有的正規連結格式（@user/post/<id> 與 /t/<id>）不得退化\n轉址需要網路，所以回歸測試要把轉址那一步做成可替換的接縫，讓測試不必連外也能跑；另外保留一條需要網路的實機檢查供人工執行。",
+      "status": "failing",
+      "evidence": null,
+      "signed_off": true,
+      "touches": [
+        "app/services/downloader.py",
+        "tests/test_threads_share_url.py"
+      ]
     }
   ]
 }
