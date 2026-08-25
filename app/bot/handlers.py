@@ -910,7 +910,10 @@ class PlaceBotHandlers:
                             )
                         )
                     
-                    # 影片分析（語音 + 視覺）
+                    # 影片分析（語音 + Gemini 影片理解）
+                    # 抽幀描述已於 2026-08-25 從影片路徑移除——消融實驗證明它是負貢獻
+                    # （見下方 Reel/影片流程同一日的註解），thread_mixed 的影片部分改用
+                    # 與主影片路徑一致的 agy 影片理解（F22）。
                     if threads_result.video_path:
                         analysis_tasks.append(
                             asyncio.create_task(
@@ -919,41 +922,37 @@ class PlaceBotHandlers:
                         )
                         analysis_tasks.append(
                             asyncio.create_task(
-                                self.visual_analyzer.analyze(threads_result.video_path)
+                                self.gemini_video.extract(threads_result.video_path)
                             )
                         )
-                    
+
                     results = await asyncio.gather(*analysis_tasks)
-                    
+
                     # 解析結果
                     result_idx = 0
                     image_desc = ""
                     video_transcript = ""
-                    video_visual = ""
-                    
+
                     if threads_result.image_paths:
                         img_result = results[result_idx]
                         image_desc = img_result.overall_visual_summary if img_result.success else ""
                         result_idx += 1
-                    
+
                     if threads_result.video_path:
                         trans_result = results[result_idx]
                         video_transcript = trans_result.transcript if trans_result.success else ""
                         result_idx += 1
-                        
-                        vis_result = results[result_idx]
-                        video_visual = vis_result.overall_visual_summary if vis_result.success else ""
+
+                        gemini_result = results[result_idx]
                         result_idx += 1
-                    
+
                     # 合併所有分析結果
                     parts = []
                     if post_caption:
                         parts.append(f"【貼文說明】\n{post_caption}")
                     if image_desc:
                         parts.append(f"【圖片內容】\n{image_desc}")
-                    if video_visual:
-                        parts.append(f"【影片畫面】\n{video_visual}")
-                    
+
                     visual_description = "\n\n".join(parts) if parts else ""
                     transcript = video_transcript or post_caption
                     

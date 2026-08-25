@@ -78,7 +78,16 @@ class InstagramDownloader:
         r"https?://(?:www\.)?threads\.(?:net|com)/@[\w.]+/post/([A-Za-z0-9_-]+)",
         r"https?://(?:www\.)?threads\.(?:net|com)/t/([A-Za-z0-9_-]+)",
     ]
-    
+
+    # Threads 分享按鈕產生的短連結（例如 https://www.threads.com/share/<id>），
+    # 本身不含帳號或貼文 ID，需要先跟隨 HTTP 轉址才能取得上面兩種正規網址。
+    THREADS_SHARE_URL_PATTERN = (
+        r"https?://(?:www\.)?threads\.(?:net|com)/share/([A-Za-z0-9_-]+)"
+    )
+
+    # 轉址只是為了取得正規網址，不必等太久
+    THREADS_SHARE_RESOLVE_TIMEOUT = 10.0
+
     # Threads 預設分享圖 URL 特徵（用於判斷是否為實際圖片）
     THREADS_DEFAULT_IMAGE_PATTERNS = [
         "static.cdninstagram.com",
@@ -114,6 +123,9 @@ class InstagramDownloader:
             logger.warning(f"⚠️ {self.UNAUTHENTICATED_HINT}")
         self._instaloader: Optional[instaloader.Instaloader] = None
         self._instaloader_username: Optional[str] = None
+        # 可替換的轉址 resolver（測試接縫）：預設真的發 HTTP 請求跟隨轉址，
+        # 單元測試可以整個換掉這個屬性，不必連外就能測分享短連結的解析邏輯。
+        self._share_url_resolver = self._resolve_share_url
     
     def _find_cookies_file(self) -> Optional[Path]:
         """尋找 cookies.txt 檔案"""
@@ -313,6 +325,49 @@ class InstagramDownloader:
                 return True
         return False
 
+    def is_threads_share_url(self, url: str) -> bool:
+        """判斷 URL 是否為 Threads 分享短連結（/share/<id>）"""
+        return bool(re.match(self.THREADS_SHARE_URL_PATTERN, url))
+
+    async def _resolve_share_url(self, url: str) -> str:
+        """預設 resolver：實際發出 HTTP 請求跟隨轉址，回傳最終網址。"""
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=self.THREADS_SHARE_RESOLVE_TIMEOUT
+        ) as client:
+            resp = await client.get(url)
+            return str(resp.url)
+
+    async def resolve_threads_url(self, url: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Threads 分享短連結（/share/<id>）本身不含帳號或貼文 ID，
+        需要先跟隨轉址取得正規網址，才能交給既有解析邏輯。非分享連結原樣傳回。
+
+        「轉址連不上」與「轉址後的連結無法辨識」是兩種不同的失敗，
+        錯誤訊息分開講——不能讓使用者以為自己貼錯了連結。
+
+        Returns:
+            (resolved_url, error_message)：恰有一個為 None。
+        """
+        if not self.is_threads_share_url(url):
+            return url, None
+
+        try:
+            resolved = await self._share_url_resolver(url)
+        except httpx.TimeoutException:
+            return None, "連上 Threads 逾時，暫時無法解析此分享連結，請稍後再試"
+        except httpx.HTTPError as e:
+            return None, f"無法連上 Threads 取得分享連結的正規網址（網路問題，非連結本身無效）：{e}"
+        except Exception as e:
+            return None, f"解析 Threads 分享連結時發生未預期錯誤：{e}"
+
+        # 轉址後常帶追蹤查詢參數（例如 ?xmt=...），削掉再交給既有解析邏輯
+        normalized = resolved.split("?", 1)[0]
+
+        if not self.is_threads_url(normalized):
+            return None, f"Threads 分享連結轉址後的網址無法辨識為貼文連結：{normalized}"
+
+        return normalized, None
+
     def validate_url(self, url: str) -> bool:
         """驗證是否為有效的 Instagram 或 Threads 連結"""
         for pattern in self.INSTAGRAM_URL_PATTERNS:
@@ -341,6 +396,11 @@ class InstagramDownloader:
         Returns:
             DownloadResult: 下載結果
         """
+        resolved_url, resolve_error = await self.resolve_threads_url(url)
+        if resolve_error:
+            return DownloadResult(success=False, error_message=resolve_error)
+        url = resolved_url
+
         if not self.validate_url(url):
             return DownloadResult(
                 success=False,
@@ -554,12 +614,17 @@ class InstagramDownloader:
         Returns:
             PostDownloadResult: 下載結果
         """
+        resolved_url, resolve_error = await self.resolve_threads_url(url)
+        if resolve_error:
+            return PostDownloadResult(success=False, error_message=resolve_error)
+        url = resolved_url
+
         if not self.validate_url(url):
             return PostDownloadResult(
                 success=False,
                 error_message="無法解析此連結，請確認是否為有效的 Instagram 連結",
             )
-        
+
         shortcode = self.extract_post_id(url)
         if not shortcode:
             return PostDownloadResult(
@@ -1157,6 +1222,11 @@ class InstagramDownloader:
         Returns:
             PostDownloadResult: 下載結果
         """
+        resolved_url, resolve_error = await self.resolve_threads_url(url)
+        if resolve_error:
+            return PostDownloadResult(success=False, error_message=resolve_error)
+        url = resolved_url
+
         if not self.is_threads_url(url):
             return PostDownloadResult(
                 success=False,
