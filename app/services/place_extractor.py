@@ -225,13 +225,71 @@ class PlaceExtractor:
             
             logger.debug(f"LLM 回應: {result_text}")
             
-            # 解析 JSON
-            return self._parse_response(result_text)
+            # 解析 JSON，再用確定性規則收斂（8b 的判斷不是最終權威）
+            parsed = self._parse_response(result_text)
+            parsed.places = self._reconcile(parsed.places, gemini_places)
+            parsed.found = bool(parsed.places)
+            return parsed
             
         except Exception as e:
             logger.error(f"擷取地點失敗: {e}")
             return ExtractionResult(found=False, notes=str(e))
     
+    # 區域名不是店家（驗收標準明文）。8b 會把逐字稿與 hashtag 裡的市場名當成
+    # 一家店塞進來，實測三次全中（「北投市場」「北投中繼市場」）。這條寫在提示詞
+    # 裡沒有用——同樣三次全中，它照塞。所以改成程式擋。
+    # ponytail: 純後綴比對，遇到真的叫「XX市場」的店家會誤殺；等真的踩到再加白名單
+    AREA_SUFFIXES = ("市場", "夜市", "商圈", "老街", "周邊")
+
+    @staticmethod
+    def _norm_name(name: Optional[str]) -> str:
+        """比對用的正規化：抹掉空白與「店」字尾。
+
+        「巫婆水餃」與「巫婆水餃店」是同一家，不該因為多一個字被當成兩筆。
+        """
+        return (name or "").replace(" ", "").strip().rstrip("店")
+
+    def _reconcile(self, places: List[PlaceInfo], gemini_places: Optional[List] = None) -> List[PlaceInfo]:
+        """用 agy 的判斷收斂 8b 的輸出。
+
+        2026-08-25 消融實驗：對照 Ryan 逐幀確認的答案，agy 的 is_recommended
+        拿到 11/11，8b 合併之後掉到 8-9/11——它漏掉 whisper 聽錯名字的店
+        （海鮮拉麵清燉豬腳），又把 agy 已經標成「只是畫面帶到」的地標放進來。
+        所以判斷權歸 agy，8b 只剩兩件事：補 agy 看不到的來源（說明文裡的業配
+        店家），以及把同一家店的多個寫法收成一筆。
+
+        agy 失敗時 gemini_places 是空的，這裡只做區域名過濾，其餘原樣通過——
+        降級路徑本來就不要求精度。
+        """
+        kept = [p for p in places if not self._is_area_name(p.name)]
+
+        if not gemini_places:
+            return kept
+
+        rejected = {self._norm_name(g.name) for g in gemini_places if not g.is_recommended}
+        kept = [p for p in kept if self._norm_name(p.name) not in rejected]
+
+        # agy 認定的推薦店家一律補齊：8b 漏掉它們的原因通常是逐字稿把店名
+        # 聽爛了，而那正是 agy 存在的理由，不能讓 8b 的漏聽蓋掉它。
+        seen = {self._norm_name(p.name) for p in kept}
+        for g in gemini_places:
+            if not g.is_recommended or self._is_area_name(g.name):
+                continue
+            if self._norm_name(g.name) in seen:
+                continue
+            kept.append(PlaceInfo(
+                name=g.name,
+                confidence="medium",
+                recommendation=g.reason,
+                search_keywords=[g.name],
+            ))
+            seen.add(self._norm_name(g.name))
+        return kept
+
+    def _is_area_name(self, name: Optional[str]) -> bool:
+        """行政區、市場、商圈這類區域名，不是可以存進地圖清單的店家。"""
+        return self._norm_name(name).endswith(self.AREA_SUFFIXES)
+
     def _parse_response(self, response_text: str) -> ExtractionResult:
         """解析 LLM 回應"""
         try:
