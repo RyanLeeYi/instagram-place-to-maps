@@ -99,7 +99,13 @@ class GeminiVideoExtractor:
             proc.kill()
             return GeminiVideoResult(error_message=f"agy 逾時（{self.timeout}s）")
 
-        return self._parse(stdout.decode("utf-8", "replace"), stderr.decode("utf-8", "replace"))
+        result = self._parse(stdout.decode("utf-8", "replace"), stderr.decode("utf-8", "replace"))
+        if not result.success:
+            # 2026-08-25 端到端才發現：失敗只出現在使用者回覆裡，log 一片安靜。
+            # 降級是常態，但「常態」不等於「不用留紀錄」——否則沒人看得出
+            # 這條線到底多久沒生效過。
+            logger.warning(f"Gemini 影片理解失敗，降級為只用本地結果: {result.error_message}")
+        return result
 
     def _parse(self, stdout: str, stderr: str = "") -> GeminiVideoResult:
         """把 agy 的 JSON 包裝拆開。
