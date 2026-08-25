@@ -77,3 +77,24 @@ def test_既有紀錄的回覆講得出處理過與店名():
     assert "已經處理過" in message
     assert "巫婆水餃" in message
     assert "maps.google.com" in message
+
+
+def test_回覆的_MarkdownV2_保留字元都有跳脫():
+    """2026-08-25 端到端踩到的：城市那對括號沒跳脫，Telegram 整則拒收
+    （Can't parse entities: character '(' is reserved）。
+    上面那條只比對子字串，抓不到這件事。
+    """
+    place = Place(name="研田拉麵", city="高雄",
+                  google_maps_url="https://maps.google.com/?cid=1")
+
+    message = PlaceBotHandlers._format_existing_places([place])
+
+    # 連結目的地以外的保留字元都必須帶著前導反斜線
+    link_start = message.index("[Google Maps](")
+    body = message[:link_start]
+    for ch in "()":
+        for idx, c in enumerate(body):
+            if c == ch:
+                assert idx > 0 and body[idx - 1] == "\\", (
+                    f"MarkdownV2 保留字元 {ch!r} 沒跳脫: {body!r}"
+                )

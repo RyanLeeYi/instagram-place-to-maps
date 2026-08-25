@@ -176,7 +176,10 @@ class PlaceBotHandlers:
         for i, place in enumerate(places, 1):
             line = f"{i}\\. *{escape_markdown(place.name)}*"
             if place.city:
-                line += f" ({escape_markdown(place.city)})"
+                # MarkdownV2 的 '(' ')' 在連結語法之外也是保留字元，不跳脫會讓
+                # 整則訊息送不出去（2026-08-25 端到端實際踩到：Telegram 回
+                # "character '(' is reserved"，而單元測試只比對子字串，驗不到這件事）
+                line += f" \\({escape_markdown(place.city)}\\)"
             lines.append(line)
             if place.google_maps_url:
                 # 連結目的地只需要跳脫 ')' 與 '\'；整條套 escape_markdown 會把

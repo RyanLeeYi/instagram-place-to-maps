@@ -47,7 +47,10 @@ class GeminiVideoExtractor:
     # 實測 `...\temp_videos\*`、`...\*.mp4`、`SideProject\**` 與正斜線版本全部被拒，
     # 唯一放行的萬用字元是 `read_file(*)`，那等於整台機器可讀。
     # 所以固定一個檔名、在 settings.json 只登記這一個路徑，是這裡最小的權限面。
-    # ponytail: 固定路徑＋鎖，等 agy 的 glob 能用再改成每則請求各自的檔名
+    # 這個鎖是 process 內的：線上只有一隻 bot process，asyncio.Lock 就夠。
+    # 但**不要在 bot 還跑著的時候另開一支腳本呼叫這個服務**——兩個 process
+    # 會互相蓋掉這個檔案，而且不會有任何錯誤訊息。
+    # ponytail: 固定路徑＋process 內鎖，等 agy 的 glob 能用再改成每則請求各自的檔名
     INPUT_FILENAME = "agy_input.mp4"
 
     PROMPT = (
