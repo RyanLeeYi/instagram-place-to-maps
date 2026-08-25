@@ -1040,15 +1040,12 @@ class PlaceBotHandlers:
                 if video_caption:
                     logger.info(f"取得影片說明文，長度: {len(video_caption)} 字元")
                 
-                # 語音轉文字 + 視覺分析 + Gemini 影片理解（並行處理）
-                await safe_edit_message(status_message, "🎤👁️ 正在分析語音與畫面...")
+                # 語音轉文字 + Gemini 影片理解（並行處理）
+                await safe_edit_message(status_message, "🎤 正在分析語音與影片...")
                 
                 # 建立並行任務
                 transcript_task = asyncio.create_task(
                     self.transcriber.transcribe(download_result.audio_path)
-                )
-                visual_task = asyncio.create_task(
-                    self.visual_analyzer.analyze(download_result.video_path)
                 )
                 # 第二來源：Gemini 直接讀 mp4，補招牌上才有的店名。
                 # 它自帶降級（失敗回 success=False），所以不必包 try。
@@ -1056,13 +1053,19 @@ class PlaceBotHandlers:
                     self.gemini_video.extract(download_result.video_path)
                 )
                 
-                # 等待三個任務完成
-                transcript_result, visual_result, gemini_result = await asyncio.gather(
-                    transcript_task, visual_task, gemini_task
+                transcript_result, gemini_result = await asyncio.gather(
+                    transcript_task, gemini_task
                 )
                 
                 transcript = transcript_result.transcript if transcript_result.success else ""
-                visual_description = visual_result.overall_visual_summary if visual_result.success else ""
+                # 抽幀描述已於 2026-08-25 從影片路徑移除——消融實驗證明它是負貢獻。
+                # 十幀上千字、九成與店名無關（「這碗湯是奶油色的」），只貢獻一個錯字
+                # 店名（阿宗「蝦」仔煎），卻把提示詞灌長到讓 qwen3:8b 崩掉：三次分別
+                # 吐出簡體字、把 whisper 聽錯的「減重冰」當成店家、JSON 生不出來。
+                # 砍掉後同樣三次全穩，找到的店還更多（3.3 -> 5.3）。
+                # 沒有 Gemini 時也一樣負貢獻：多出來的只有「北投市場」這類地標誤判。
+                # 圖片貼文路徑仍使用 visual_analyzer——那裡它是唯一來源，不受影響。
+                visual_description = ""
                 # 將影片說明文設為 post_caption 供後續使用
                 post_caption = video_caption
             
