@@ -52,6 +52,16 @@ class Settings(BaseSettings):
     agy_command: str = Field(default="agy", env="AGY_COMMAND")
     gemini_video_timeout: int = Field(default=240, env="GEMINI_VIDEO_TIMEOUT")
 
+    # agy 實測約一半機率失敗（2026-08-25，約 16 次呼叫 8 次失敗，六種模式），
+    # 其中多數是暫時性的——同一支影片重試第二次就成功過兩次。這兩個設定給 F26。
+    agy_max_attempts: int = Field(default=3, env="AGY_MAX_ATTEMPTS")
+    # 重試不得讓總時長無上限。0 表示用 gemini_video_timeout * agy_max_attempts 推算。
+    agy_total_timeout: int = Field(default=0, env="AGY_TOTAL_TIMEOUT")
+
+    # 合併階段的模型後端（F27）。目前唯一合法值是 ollama；
+    # 給不認得的值要明確報錯，不得靜默 fallback。
+    merge_backend: str = Field(default="ollama", env="MERGE_BACKEND")
+
     @property
     def allowed_chat_ids(self) -> List[str]:
         """解析允許的 chat_id 列表"""

@@ -1,3 +1,45 @@
 {
-  "features": []
+  "features": [
+    {
+      "id": "F26",
+      "name": "agy 呼叫重試機制",
+      "prerequisites": [],
+      "acceptance": "GeminiVideoExtractor 呼叫失敗時自動重試，次數上限讀 settings.agy_max_attempts（預設 3）。\n只重試暫時性失敗：回應裡找不到 JSON、status=CANCELED、status=ERROR、連線中斷、逾時。\n不重試確定性失敗：權限被拒（設定問題，重試只是浪費三倍時間）、gemini_video_enabled=False、影片檔不存在。兩類必須能從行為上區分——確定性失敗只能呼叫一次。\n每次重試寫一則 log，含第幾次與該次失敗原因。全部失敗後回傳的 error_message 必須含總嘗試次數與最後一次的原因，不得與單次失敗的訊息無法區分。\n總時長上限讀 settings.agy_total_timeout；值為 0 時用 gemini_video_timeout * agy_max_attempts 推算。超過上限就停止重試並回報，不得因重試而無限拉長。\n單元測試用注入的假 subprocess，不得呼叫真的 agy，需涵蓋：暫時性失敗後成功、連續失敗到上限、確定性失敗只呼叫一次、總時長上限生效。另需一條反向測試證明「確定性失敗不重試」的斷言真的抓得到迴歸。\n另附一支需要網路的人工量測腳本（scripts/ 下，不列入自動測試）：對 temp_videos/f22_fixtures/ 的兩支影片各跑 N 次，記錄「至少一次成功」的比率，結果寫進 docs/。\n既有行為不得退化：scripts/f22_regression.py 3 兩案例各 3/3，完整測試套件全綠。",
+      "status": "failing",
+      "evidence": null,
+      "signed_off": true,
+      "touches": [
+        "app/services/gemini_video.py",
+        "tests/test_agy_retry.py",
+        "scripts/agy_reliability.py"
+      ]
+    },
+    {
+      "id": "F27",
+      "name": "合併階段可插拔後端（envelope）",
+      "prerequisites": [],
+      "acceptance": "【envelope，不直接驗收，由底下 slice 逐一送審】\noutcome：合併階段的模型後端可插拔，支援 agy / claude / codex / ollama 四家，每家可用 CLI（訂閱）或 SDK（API key）認證，執行模式支援「依序備援」與「同時投票」且由使用者切換。\nnon-goals：不動讀影片那一格（仍是 agy CLI，已查證 antigravity-sdk-python 只吃 API key、不沿用訂閱憑證，結構上沒有替代品）；不動 _reconcile 的判定規則；不改 F22 的兩個回歸案例標準。\n共用限制：預設後端必須是 ollama，零金鑰狀態下整條線要能跑完；任何後端缺金鑰或不可用時自動降級，不得中斷；兩個既有回歸案例在每個 slice 之後都必須維持各 3/3。\nslice：F27.1 抽介面並搬遷 ollama（行為不變）→ F27.2 兩種執行模式與切換 → F27.3 三家 CLI 版後端 → F27.4 三家 SDK 版與金鑰管理。\nenvelope 簽核不等於四個 slice 都獲准動工；之後每輪只審下一個可執行的 slice。",
+      "status": "failing",
+      "evidence": null,
+      "signed_off": true,
+      "touches": [],
+      "envelope": true
+    },
+    {
+      "id": "F27.1",
+      "name": "抽出合併後端介面並搬遷 ollama 實作",
+      "prerequisites": [
+        "F27"
+      ],
+      "acceptance": "新增一個合併後端介面：輸入逐字稿、說明文、IG 帳號、agy 候選，輸出 List[PlaceInfo]。現有的 ollama 呼叫搬進去成為第一個實作。\nPlaceExtractor.extract() 的對外簽名不變；_reconcile 與 _is_area_name 一行不動。\n後端選擇讀 settings.merge_backend（已存在，預設 ollama）。此 slice 唯一合法值是 ollama；給其他值要在啟動或呼叫時報明確錯誤，不得靜默 fallback。\n驗收：scripts/f22_regression.py 3 兩案例各 3/3；完整測試套件維持全綠；新介面有單元測試，用假後端驗證 extract() 會呼叫它並正確處理回傳，另含一條反向測試證明假後端沒被呼叫時測試會紅。\n不得引入任何新相依、不得出現 API key、不得出現 subprocess 呼叫——這個 slice 純粹是搬家。\nrollback：單一 commit revert。",
+      "status": "failing",
+      "evidence": null,
+      "signed_off": true,
+      "touches": [
+        "app/services/place_extractor.py",
+        "app/services/merge_backends.py",
+        "tests/test_merge_backend.py"
+      ]
+    }
+  ]
 }
