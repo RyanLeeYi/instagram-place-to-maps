@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List
 
 from app.config import settings
-from app.services.merge_backends import PlaceInfo, get_backend
+from app.services.merge_backends import MergeFailure, PlaceInfo, get_backend
 
 # PlaceInfo 定義搬到 merge_backends.py（F27.1：後端要用它組裝回傳值），
 # 這裡 re-export 是為了讓既有的 `from app.services.place_extractor import
@@ -180,15 +180,21 @@ class PlaceExtractor:
             gemini_candidates=self.format_gemini_candidates(gemini_places),
         )
         
+        notes = None
         try:
             # 呼叫後端拿到結構化地點清單，再用確定性規則收斂（模型的判斷不是最終權威）
             places = await self._backend.merge(prompt)
-            places = self._reconcile(places, gemini_places)
-            return ExtractionResult(found=bool(places), places=places)
-
+        except MergeFailure as e:
+            # 後端沒產出清單，但它給的理由要送到使用者眼前（handlers 的「備註」那行）。
+            # 這裡不能提前 return——舊版在解析失敗時照樣跑 _reconcile，agy 候選
+            # 還救得回來，found 甚至可能翻回 True。搬家時弄丟過這段，2026-08-25 驗收抓到。
+            places, notes = [], e.notes
         except Exception as e:
             logger.error(f"擷取地點失敗: {e}")
             return ExtractionResult(found=False, notes=str(e))
+
+        places = self._reconcile(places, gemini_places)
+        return ExtractionResult(found=bool(places), places=places, notes=notes)
     
     # 區域名不是店家（驗收標準明文）。8b 會把逐字稿與 hashtag 裡的市場名當成
     # 一家店塞進來，實測三次全中（「北投市場」「北投中繼市場」）。這條寫在提示詞

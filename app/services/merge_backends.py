@@ -48,14 +48,35 @@ class PlaceInfo:
     search_keywords: List[str] = field(default_factory=list)
 
 
+class MergeFailure(Exception):
+    """後端沒能產出地點清單，`notes` 是要讓使用者看到的原因。
+
+    存在的理由是搬家時差點弄丟的東西：舊的 `_parse_response` 在找不到 JSON、
+    JSON 修不好、或模型自己回 found=false 時，會把原因寫進
+    `ExtractionResult.notes` 並顯示給使用者（handlers 的「備註」那行）。
+    後端契約回傳 `List[PlaceInfo]`，沒有欄位承載這段文字，一開始就直接回空
+    清單——使用者只會看到一句沒有資訊量的通用文案，正是這個專案已經修過
+    兩次的病（F24 的 cookies、F25 的短連結）。
+
+    用例外而不是擴充回傳型別，是因為 acceptance 要求輸出就是 `List[PlaceInfo]`。
+    `PlaceExtractor` 專門接住它、補回 notes，然後**照舊繼續跑 `_reconcile`**——
+    本地這步爛掉時 agy 候選還救得回來，那是舊版就有的行為，不能因為搬家弄丟。
+    """
+
+    def __init__(self, notes: Optional[str]):
+        super().__init__(notes or "後端沒有回傳地點")
+        self.notes = notes
+
+
 class MergeBackend(Protocol):
     """輸入組好的提示詞，輸出解析後的地點清單。
 
-    解析失敗（找不到 JSON、JSON 壞掉、模型自己說 found=false）一律回傳空
-    清單，不拋例外——PlaceExtractor 那層的 _reconcile 之後還會用 agy 候選
-    補救，不該因為本地模型這一步輸出爛掉就整段中斷。真正該讓例外往上拋的
-    只有「呼叫本身失敗」（連線問題、SDK 參數不合等），PlaceExtractor.extract()
-    的 try/except 會接住並轉成 ExtractionResult(found=False, notes=...)。
+    解析失敗（找不到 JSON、JSON 壞掉、模型自己說 found=false）丟 `MergeFailure`
+    並帶上原因，由 PlaceExtractor 轉成 notes；它接住之後仍會跑 _reconcile，
+    用 agy 候選補救，不會因為本地模型這一步輸出爛掉就整段中斷。
+    真正的「呼叫本身失敗」（連線問題、SDK 參數不合等）照舊讓例外往上拋，
+    PlaceExtractor.extract() 的 try/except 會接住並轉成
+    ExtractionResult(found=False, notes=...)。
     """
 
     async def merge(self, prompt: str) -> List[PlaceInfo]:
@@ -124,7 +145,7 @@ class OllamaMergeBackend:
             json_match = re.search(r'\{[\s\S]*\}', cleaned_text)
             if not json_match:
                 logger.warning("回應中找不到 JSON")
-                return []
+                raise MergeFailure("無法解析回應")
 
             json_str = json_match.group()
 
@@ -157,13 +178,14 @@ class OllamaMergeBackend:
                     except json.JSONDecodeError as second_error:
                         logger.error(f"JSON 解析最終失敗: {second_error}")
                         logger.debug(f"問題 JSON: {json_str[:500]}...")
-                        return []
+                        raise MergeFailure(f"JSON 解析失敗: {second_error}")
                 else:
                     logger.error(f"JSON 解析失敗，無法修復: {first_error}")
-                    return []
+                    raise MergeFailure(f"JSON 解析失敗: {first_error}")
 
             if not data.get("found", False):
-                return []
+                # 模型自己說沒找到——它附的理由是有資訊的，要送到使用者眼前
+                raise MergeFailure(data.get("notes"))
 
             places_data = data.get("places", [])
 
@@ -195,4 +217,4 @@ class OllamaMergeBackend:
 
         except json.JSONDecodeError as e:
             logger.error(f"JSON 解析失敗: {e}")
-            return []
+            raise MergeFailure(f"JSON 解析失敗: {e}")

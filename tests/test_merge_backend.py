@@ -14,6 +14,7 @@ import pytest
 
 from app.config import settings
 from app.services.merge_backends import (
+    MergeFailure,
     OllamaMergeBackend,
     PlaceInfo,
     UnsupportedMergeBackendError,
@@ -94,3 +95,75 @@ def test_placeextractor建構時採用settings的merge_backend_不支援就報�
     monkeypatch.setattr(settings, "merge_backend", "not-a-real-backend")
     with pytest.raises(UnsupportedMergeBackendError):
         PlaceExtractor()
+
+
+# --- 後端失敗時的診斷文字（D2：搬家時弄丟過，2026-08-25 驗收抓到）---------
+
+
+def _parse(text):
+    """直接打 OllamaMergeBackend._parse，不碰 ollama。"""
+    return OllamaMergeBackend()._parse(text)
+
+
+def test_找不到_JSON_時帶出原因():
+    with pytest.raises(MergeFailure) as e:
+        _parse("模型今天想聊天，一個大括號都沒有")
+    assert e.value.notes == "無法解析回應"
+
+
+def test_JSON_壞掉時帶出原因():
+    # 要有閉合大括號才會走到解析那一步，否則會先被判成「找不到 JSON」
+    with pytest.raises(MergeFailure) as e:
+        _parse('{"found": true, "places": [{"name": "a",,}]}')
+    assert "JSON 解析失敗" in e.value.notes
+
+
+def test_模型自己說沒找到時把它的理由帶出來():
+    """模型附的理由是有資訊的，不能換成通用文案。"""
+    with pytest.raises(MergeFailure) as e:
+        _parse('{"found": false, "places": [], "notes": "這是穿搭影片，沒有店家"}')
+    assert e.value.notes == "這是穿搭影片，沒有店家"
+
+
+class _壞掉的後端:
+    async def merge(self, prompt):
+        raise MergeFailure("無法解析回應")
+
+
+def test_後端解析失敗時_notes_會送到使用者眼前():
+    extractor = PlaceExtractor()
+    extractor._backend = _壞掉的後端()
+
+    result = asyncio.run(
+        extractor.extract(transcript="", visual_description="", caption="")
+    )
+
+    assert result.found is False
+    assert result.notes == "無法解析回應"
+    assert result.error_message == "無法解析回應"
+
+
+def test_後端解析失敗時仍然跑_reconcile_讓_agy_候選救回來():
+    """這條是 D2 真正要守住的行為。
+
+    舊版在解析失敗時照樣跑 _reconcile，所以本地模型輸出爛掉時，agy 標為
+    主角的店家還救得回來、found 甚至翻回 True。搬家時如果在失敗分支直接
+    return，這條路就斷了——而且不會有任何測試變紅。
+    """
+    from app.services.gemini_video import GeminiPlace
+
+    extractor = PlaceExtractor()
+    extractor._backend = _壞掉的後端()
+
+    result = asyncio.run(
+        extractor.extract(
+            transcript="",
+            visual_description="",
+            caption="",
+            gemini_places=[GeminiPlace(name="阿宗蚵仔煎", is_recommended=True)],
+        )
+    )
+
+    assert result.found is True, "解析失敗時 agy 候選應該還救得回來"
+    assert [p.name for p in result.places] == ["阿宗蚵仔煎"]
+    assert result.notes == "無法解析回應", "救回來了也要保留失敗原因"
