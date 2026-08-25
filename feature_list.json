@@ -16,6 +16,25 @@
         "tests/test_merge_backend.py"
       ],
       "envelope": true
+    },
+    {
+      "id": "F27.2",
+      "name": "合併階段的兩種執行模式與切換",
+      "prerequisites": [
+        "F27",
+        "F27.1"
+      ],
+      "acceptance": "【scope】把合併階段從「單一後端」改成「一條後端鏈 + 一種執行模式」。鏈上唯一合法名稱仍是 ollama，本 slice 不新增任何後端實作（那是 F27.3／F27.4），多後端行為一律用假後端測。\n【scope】現況：PlaceExtractor 在 handlers.py:139 建構一次、活到 bot 結束，所以任何「建構時決定」的東西，改了設定都要重啟才生效。\n【scope】不動 _reconcile、_is_area_name、EXTRACTION_PROMPT 的內容，不動讀影片那一格（gemini_video／agy），不引入新相依、不得出現 API key 或 subprocess 呼叫。\n\n1. 設定新增 MERGE_BACKENDS（逗號分隔的後端名稱鏈，預設 \"ollama\"），取代現有的 MERGE_BACKEND；app/config.py 仍是唯一 env 入口。已核對 .env 與 .env.example 都沒有設 MERGE_BACKEND，直接汰換不改變任何現有部署的行為。\n2. 鏈為空、或含 ollama 以外的名稱 → PlaceExtractor 建構時丟 UnsupportedMergeBackendError（沿用 F27.1 語意），不得靜默 fallback 回 ollama。鏈的內容只讀 env，不可運行時改。\n3. 設定新增 MERGE_MODE（failover 或 vote，預設 failover）。env 值非法 → 建構時丟例外。\n4. 模式可在 bot 運行中切換：新增 /mergemode 指令，比照現有 /frames 的 inline keyboard 作法（handlers.py:288-418），透過 runtime_settings 持久化到 runtime_settings.json。優先序比照 google_maps_saver.py:498 的既有慣例：runtime_settings 有值就用它，否則用 MERGE_MODE。\n5. 因為 PlaceExtractor 是長生命週期物件（見 scope），模式必須在每次 extract() 時讀取，不得在 __init__ 讀完就快取。必須有一條測試證明：建構之後改 runtime_settings 的模式，下一次 extract() 就走新模式（不重啟）。\n6. runtime_settings.json 存著非法模式值時 → 寫一則 WARNING log 並退回 MERGE_MODE 的值，不得讓運行中的 bot 崩潰。與第 3 條「env 非法即崩潰」的不對稱是刻意的：env 是啟動期的設定錯誤，持久化檔是運行期可能損毀的資料。\n7. failover：依鏈的設定順序逐一呼叫；第一個回傳「非空地點清單」的就是答案，其後的後端不得被呼叫。\n8. failover：前一個丟 MergeFailure、丟任何其他例外、或回傳空清單，都視為失敗並往下一個試，不中斷。空清單算失敗是刻意的——後端解析成功但一家都沒抓到時，鏈上的下一個仍值得問。\n9. failover：全部失敗 → 丟一個 MergeFailure，notes 逐一列出每個後端的名稱與它各自的失敗原因，不得只留最後一個、也不得退化成通用文案。PlaceExtractor 接住之後仍照 F27.1 的作法繼續跑 _reconcile（本地這步爛掉時 agy 候選還救得回來），不得在失敗分支提前 return。\n10. vote：鏈上所有後端同時呼叫（asyncio 併發，不是迴圈依序 await）。要有一條測試能區分併發與依序：假後端互相等待對方開始，依序實作會逾時、併發實作會過。\n11. vote：記票鍵是正規化後的店名。為此把 place_extractor.py 的 _norm_name 移到 merge_backends.py 成為模組層級函式 norm_place_name()，place_extractor.py 改為 import 它；PlaceExtractor._norm_name 保留為轉呼叫的 staticmethod，讓 _reconcile 的內容一行不動。不得在兩個模組各留一份正規化邏輯（會漂移），也不得由 merge_backends import place_extractor（那是循環 import，且違反 service 之間不得互相 import）。\n12. vote：門檻是嚴格多數。設 n = 回傳非空清單的後端數（丟例外、丟 MergeFailure、回空清單的都不計入 n），保留 count >= floor(n/2)+1 的地點：n=1 全留、n=2 需兩家都有、n=3 需兩家。理由是這個專案的不對稱性——錯的條目要手動去 Maps 刪，漏掉的隨時能自己補。\n13. vote：同一個後端自己回傳多筆正規化後同名的地點，只算一票。\n14. vote：同一個地點在不同後端有不同欄位值時，取「鏈設定順序」中第一個有非空值的後端的值；輸出順序也依鏈設定順序，不得依完成順序（asyncio 完成順序不穩定，否則同樣輸入會有不同輸出）。\n15. vote：n = 0（全部失敗）時，比照第 9 條的 failover 全敗處理。\n16. 來源要看得見：ExtractionResult 新增 backend_note（Optional[str]）。failover 成功時填「採用後端：<名稱>」；vote 成功時填「投票後端：<名稱>(<票數>票)、...」依鏈順序列出；全敗時為 None，原因走既有的 notes。\n17. handlers 在成功回覆裡附上 backend_note 那一行，與失敗時的「備註」分開，不得混進同一行。\n18. 每次合併寫一則 INFO log，含 mode、實際被呼叫的後端、各自成功或失敗、以及 vote 模式的票數。\n19. 測試注入接縫：假後端以 extractor._backends = [fake_a, fake_b] 注入（取代 F27.1 的 extractor._backend）；產品程式不提供註冊外部後端的公開途徑。tests/test_merge_backend.py 現有三處 _backend 注入（第 54、135、157 行）一併改寫。\n20. 單元測試涵蓋第 2、3、5、6、7、8、9、10、12（n=1／2／3 各一）、13、14、15、16 條各至少一條。\n21. 一條反向測試證明第 7 條「其後的後端不得被呼叫」這個斷言真的抓得到迴歸：比照 tests/test_merge_backend.py 現有的 _跑一次並斷言後端有被用到——正反兩條共用同一個斷言 helper，反向測試對著刻意寫壞的實作跑同一段斷言。\n22. 有界回歸：scripts/f22_regression.py 3 兩案例各 3/3；scripts/smoke_pipeline.py 七段跑完；完整測試套件全綠，且 passed 數不低於動工前基準 134（新增測試會讓它變大，是下限不是等號）。\n23. rollback：本 slice 自己一個 commit，不與別的 feature 混在一起（F27.1 就是混進 03b8b4c 才做不到）。判定方式：revert 該 commit 之後 pytest 回到 134 passed / 2 skipped、且 scripts/f22_regression.py 3 兩案例各 3/3，即算 rollback 可執行。\n24. 停止條件：fix/reverify 上限 3 輪；同一個阻塞失敗連續兩次就停下回報，不重試第三次。",
+      "status": "failing",
+      "evidence": null,
+      "signed_off": false,
+      "touches": [
+        "app/config.py",
+        "app/services/merge_backends.py",
+        "app/services/place_extractor.py",
+        "app/bot/handlers.py",
+        "tests/test_merge_backend.py"
+      ]
     }
   ]
 }
