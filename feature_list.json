@@ -22,7 +22,13 @@
       "status": "failing",
       "evidence": null,
       "signed_off": true,
-      "touches": [],
+      "touches": [
+        "app/services/place_extractor.py",
+        "app/services/merge_backends.py",
+        "app/config.py",
+        "app/bot/handlers.py",
+        "tests/test_merge_backend.py"
+      ],
       "envelope": true
     },
     {
