@@ -85,10 +85,36 @@ class GeminiVideoExtractor:
                 logger.warning(f"Gemini 影片理解失敗，降級為只用本地結果: {e}")
                 return GeminiVideoResult(error_message=str(e))
 
+    # 只在 prompt 裡寫「只回 JSON」是不夠的：2026-08-25 實測 agy 回了一整段
+    # 敘述、裡面一個 JSON 物件都沒有（status 還是 SUCCESS）。用 --json-schema
+    # 把結構要求下放到 CLI，比拜託模型自律可靠。
+    RESPONSE_SCHEMA = json.dumps(
+        {
+            "type": "object",
+            "properties": {
+                "places": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "is_recommended": {"type": "boolean"},
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["name", "is_recommended"],
+                    },
+                }
+            },
+            "required": ["places"],
+        },
+        ensure_ascii=False,
+    )
+
     async def _run(self, path: Path) -> GeminiVideoResult:
         proc = await asyncio.create_subprocess_exec(
             settings.agy_command,
             "--output-format", "json",
+            "--json-schema", self.RESPONSE_SCHEMA,
             "--print", self.PROMPT.format(path=path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

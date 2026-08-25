@@ -1,43 +1,6 @@
 {
   "features": [
     {
-      "id": "F10",
-      "name": "Telegram 端到端（傳連結收到回覆）",
-      "prerequisites": [
-        "F1",
-        "F2",
-        "F3",
-        "F4",
-        "F5",
-        "F6",
-        "F7",
-        "F8"
-      ],
-      "acceptance": "從 Telegram 傳一則 IG Reel 連結給 bot，5 分鐘內收到含地點名稱與 Google Maps 連結的回覆，且 SQLite places 表新增對應筆數",
-      "status": "failing",
-      "evidence": null,
-      "signed_off": true,
-      "touches": [
-        "app/bot/handlers.py",
-        "app/main.py"
-      ]
-    },
-    {
-      "id": "F13",
-      "name": "重複 URL 去重",
-      "prerequisites": [
-        "F10"
-      ],
-      "acceptance": "同一則連結連傳兩次，第二次 bot 回覆已處理過並附上既有紀錄，SQLite places 表不新增重複筆數（依 docs/telegram-deduplication.md）",
-      "status": "failing",
-      "evidence": null,
-      "signed_off": true,
-      "touches": [
-        "app/bot/handlers.py",
-        "app/database/models.py"
-      ]
-    },
-    {
       "id": "F22",
       "name": "本地 + Gemini 雙來源合併與推薦店家篩選",
       "prerequisites": [
