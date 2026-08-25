@@ -1,4 +1,4 @@
-"""回歸測試：呼叫 ollama 時只能傳「釘住的那個版本真的收得下」的參數。
+﻿"""回歸測試：呼叫 ollama 時只能傳「釘住的那個版本真的收得下」的參數。
 
 背景：2026-08-23 冒煙測試抓到 `Client.chat() got an unexpected keyword argument 'think'`。
 `think=True` 是 ollama 0.5+ 才有的參數，requirements.txt 釘的是 0.3.3。
@@ -65,7 +65,9 @@ def test_呼叫_ollama_只用安裝版本支援的參數(kwargs_used):
 def test_掃描抓得到擷取與視覺兩個呼叫點():
     """釘住掃描本身：漏掉的話上面那組 parametrize 會安靜地少跑。"""
     files = {p.id.split(":")[0] for p in _ollama_chat_calls()}
-    assert {"place_extractor.py", "visual_analyzer.py"} <= files
+    # F27.1 把擷取階段的 ollama 呼叫搬進 merge_backends.py（可插拔後端的第一個實作）。
+    # 這裡釘的是「兩個呼叫點都還掃得到」，檔名只是它現在所在的位置。
+    assert {"merge_backends.py", "visual_analyzer.py"} <= files
 
 
 def test_未支援的參數真的會被判為不合格():

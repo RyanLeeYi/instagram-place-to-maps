@@ -70,7 +70,11 @@ class GeminiVideoExtractor:
         self._lock = asyncio.Lock()
 
     async def extract(self, video_path: Optional[Path]) -> GeminiVideoResult:
-        """讀一支影片。任何失敗都回 success=False，不丟例外。"""
+        """讀一支影片。任何失敗都回 success=False，不丟例外。
+
+        `gemini_video_enabled=False` 與影片檔不存在是確定性失敗（設定問題），
+        在這裡就直接回傳，不進重試迴圈——重試它們沒有任何意義。
+        """
         if not settings.gemini_video_enabled:
             return GeminiVideoResult(error_message="Gemini 影片理解未啟用")
         if not video_path or not Path(video_path).exists():
@@ -78,12 +82,13 @@ class GeminiVideoExtractor:
 
         async with self._lock:
             try:
+                # 複製輸入檔只做一次：重試的是 agy 呼叫，不是這步 I/O。
                 target = self.temp_dir / self.INPUT_FILENAME
                 shutil.copyfile(video_path, target)
-                return await self._run(target.resolve())
             except Exception as e:
                 logger.warning(f"Gemini 影片理解失敗，降級為只用本地結果: {e}")
                 return GeminiVideoResult(error_message=str(e))
+            return await self._run_with_retry(target.resolve())
 
     # 只在 prompt 裡寫「只回 JSON」是不夠的：2026-08-25 實測 agy 回了一整段
     # 敘述、裡面一個 JSON 物件都沒有（status 還是 SUCCESS）。用 --json-schema
@@ -110,28 +115,82 @@ class GeminiVideoExtractor:
         ensure_ascii=False,
     )
 
+    async def _run_with_retry(self, path: Path) -> GeminiVideoResult:
+        """呼叫一次以上的 `_run()`，只重試暫時性失敗（F26）。
+
+        總時長上限讀 `settings.agy_total_timeout`；0 表示用
+        `self.timeout * agy_max_attempts` 推算，避免重試把總時長無限拉長。
+        """
+        max_attempts = max(1, settings.agy_max_attempts)
+        total_timeout = settings.agy_total_timeout or (self.timeout * max_attempts)
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+
+        result: Optional[GeminiVideoResult] = None
+        attempts_made = 0
+
+        for attempt in range(1, max_attempts + 1):
+            if attempt > 1 and (loop.time() - start) >= total_timeout:
+                logger.warning(
+                    f"agy 重試已達總時長上限（{total_timeout}s），"
+                    f"停止重試（已嘗試 {attempts_made} 次）"
+                )
+                break
+
+            attempts_made = attempt
+            result = await self._run(path)
+            if result.success:
+                return result
+
+            logger.warning(f"agy 第 {attempt} 次嘗試失敗: {result.error_message}")
+
+            if not self._is_transient_failure(result.error_message):
+                break  # 確定性失敗（設定問題），重試只是浪費時間
+
+        reason = result.error_message if result else "未知原因"
+        error_message = f"agy 共嘗試 {attempts_made} 次仍失敗，最後原因: {reason}"
+        # 2026-08-25 端到端才發現：失敗只出現在使用者回覆裡，log 一片安靜。
+        # 降級是常態，但「常態」不等於「不用留紀錄」——否則沒人看得出
+        # 這條線到底多久沒生效過。
+        logger.warning(f"Gemini 影片理解失敗，降級為只用本地結果: {error_message}")
+        return GeminiVideoResult(error_message=error_message)
+
+    @staticmethod
+    def _is_transient_failure(error_message: Optional[str]) -> bool:
+        """判斷值不值得重試。
+
+        會走到這裡的只有 `_run()` 產生的失敗（`gemini_video_enabled=False`
+        與影片檔不存在兩種確定性失敗在 `extract()` 就已經回傳，不會被分類）。
+        其中唯一已知的確定性失敗是權限被拒——agy 的權限引擎擋下 read_file
+        或它自己改走的 shell 指令時，`error` 欄位會提到 permission，重試只是
+        浪費 `agy_max_attempts` 倍的時間。其餘（JSON 解析失敗、
+        status=CANCELED/ERROR、連線中斷、逾時）一律當暫時性。
+        """
+        if not error_message:
+            return True
+        return "permission" not in error_message.lower()
+
     async def _run(self, path: Path) -> GeminiVideoResult:
-        proc = await asyncio.create_subprocess_exec(
-            settings.agy_command,
-            "--output-format", "json",
-            "--json-schema", self.RESPONSE_SCHEMA,
-            "--print", self.PROMPT.format(path=path),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        """呼叫一次 agy。單純的單次嘗試，重試邏輯在 `_run_with_retry`。"""
         try:
+            proc = await asyncio.create_subprocess_exec(
+                settings.agy_command,
+                "--output-format", "json",
+                "--json-schema", self.RESPONSE_SCHEMA,
+                "--print", self.PROMPT.format(path=path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
         except asyncio.TimeoutError:
             proc.kill()
             return GeminiVideoResult(error_message=f"agy 逾時（{self.timeout}s）")
+        except Exception as e:
+            # 連線中斷等執行期錯誤：轉成 GeminiVideoResult 讓重試迴圈能分類，
+            # 不要讓例外直接爆出去打斷迴圈。
+            return GeminiVideoResult(error_message=f"agy 連線中斷: {e}")
 
-        result = self._parse(stdout.decode("utf-8", "replace"), stderr.decode("utf-8", "replace"))
-        if not result.success:
-            # 2026-08-25 端到端才發現：失敗只出現在使用者回覆裡，log 一片安靜。
-            # 降級是常態，但「常態」不等於「不用留紀錄」——否則沒人看得出
-            # 這條線到底多久沒生效過。
-            logger.warning(f"Gemini 影片理解失敗，降級為只用本地結果: {result.error_message}")
-        return result
+        return self._parse(stdout.decode("utf-8", "replace"), stderr.decode("utf-8", "replace"))
 
     def _parse(self, stdout: str, stderr: str = "") -> GeminiVideoResult:
         """把 agy 的 JSON 包裝拆開。
