@@ -120,7 +120,7 @@ class PlaceBotHandlers:
     
     # Threads URL 正則（支援 threads.net 和 threads.com）
     THREADS_URL_PATTERN = re.compile(
-        r"https?://(?:www\.)?threads\.(?:net|com)/(?:@[\w.]+/post|t)/([A-Za-z0-9_-]+)"
+        r"https?://(?:www\.)?threads\.(?:net|com)/(?:@[\w.]+/post|t|share)/([A-Za-z0-9_-]+)"
     )
     
     # 正在處理中的訊息 ID（用於去重 - 處理中）
@@ -801,11 +801,27 @@ class PlaceBotHandlers:
                 "• instagram.com/reel/xxx\n"
                 "• instagram.com/p/xxx\n"
                 "• threads.net/@user/post/xxx\n"
-                "• threads.net/t/xxx"
+                "\u2022 threads.net/t/xxx\n"
+                "\u2022 threads.net/share/xxx"
             )
             self._processing_messages.discard(message_id)
             return
         
+        # Threads 分享短連結要在這裡就轉成正規網址，不能留給 downloader。
+        # 下面的去重是拿貼文 ID 比對的，而短連結裡那串 ID 不是貼文 ID——
+        # 不先轉，同一則貼文從分享鈕貼進來就會被當成新的一則存第二筆，
+        # 正是 F13 修掉的那種重複。
+        if self.downloader.is_threads_share_url(extracted_url):
+            resolved_url, resolve_error = await self.downloader.resolve_threads_url(
+                extracted_url
+            )
+            if resolve_error:
+                await update.message.reply_text(resolve_error)
+                self._processing_messages.discard(message_id)
+                return
+            logger.info(f"分享短連結 {extracted_url} 轉址為 {resolved_url}")
+            extracted_url = resolved_url
+
         # 判斷平台與 URL 類型
         platform = self._get_platform(extracted_url)
         url_type = self._get_url_type(extracted_url)
