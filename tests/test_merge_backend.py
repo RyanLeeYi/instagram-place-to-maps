@@ -19,7 +19,7 @@ from app.services.merge_backends import (
     UnsupportedMergeBackendError,
     get_backend,
 )
-from app.services.place_extractor import PlaceExtractor
+from app.services.place_extractor import ExtractionResult, PlaceExtractor
 
 
 class FakeMergeBackend:
@@ -34,25 +34,49 @@ class FakeMergeBackend:
         return self._places
 
 
+def _跑一次並斷言後端有被用到(extractor, fake):
+    """正向斷言抽成函式，好讓反向測試能拿同一段去跑壞掉的實作。
+
+    分開寫的理由：反向測試如果自己另外寫一組斷言，它證明的就是它自己那組，
+    不是正向測試那組。要證明「正向斷言抓得到迴歸」，就得讓它跑同一段程式。
+    """
+    result = asyncio.run(
+        extractor.extract(transcript="", visual_description="", caption="")
+    )
+    assert fake.calls, "extract() 沒有呼叫注入的後端"
+    return result
+
+
 def test_extract呼叫注入的後端並套用其回傳():
     fake = FakeMergeBackend([PlaceInfo(name="阿宗蚵仔煎", confidence="high")])
     extractor = PlaceExtractor()
     extractor._backend = fake
 
-    result = asyncio.run(
-        extractor.extract(transcript="", visual_description="", caption="")
-    )
+    result = _跑一次並斷言後端有被用到(extractor, fake)
 
-    assert fake.calls, "extract() 沒有呼叫注入的後端"
     assert [p.name for p in result.places] == ["阿宗蚵仔煎"]
     assert result.found is True
 
 
-def test_反向_假後端沒被呼叫時上面的斷言會抓到():
-    """證明上面 `assert fake.calls` 不是永遠綠燈：真的沒呼叫時它會紅。"""
+def test_反向_後端沒被呼叫時正向斷言真的會紅(monkeypatch):
+    """把 extract() 換成不碰後端的實作，證明上面那句 assert 抓得到。
+
+    這條原本只斷言「剛建好的 fake 沒有 calls」——恆真式。2026-08-25 驗收者
+    用 mutation 證實：把 extract() 換成完全不碰 self._backend 的版本之後，
+    正向測試正確變紅，但這條反向測試依然是綠的，等於它從沒驗證過自己
+    docstring 宣稱的事。改成對著真的壞掉的實作跑同一段斷言。
+    """
     fake = FakeMergeBackend([PlaceInfo(name="不該出現")])
-    # 刻意不透過 extractor.extract() 呼叫它
-    assert not fake.calls
+    extractor = PlaceExtractor()
+    extractor._backend = fake
+
+    async def 不碰後端的_extract(*args, **kwargs):
+        return ExtractionResult(found=False)
+
+    monkeypatch.setattr(extractor, "extract", 不碰後端的_extract)
+
+    with pytest.raises(AssertionError):
+        _跑一次並斷言後端有被用到(extractor, fake)
 
 
 def test_get_backend_ollama回傳ollama實作():
