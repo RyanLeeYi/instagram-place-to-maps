@@ -16,22 +16,6 @@
         "tests/test_merge_backend.py"
       ],
       "envelope": true
-    },
-    {
-      "id": "F27.1",
-      "name": "抽出合併後端介面並搬遷 ollama 實作",
-      "prerequisites": [
-        "F27"
-      ],
-      "acceptance": "新增一個合併後端介面：輸入逐字稿、說明文、IG 帳號、agy 候選，輸出 List[PlaceInfo]。現有的 ollama 呼叫搬進去成為第一個實作。\nPlaceExtractor.extract() 的對外簽名不變；_reconcile 與 _is_area_name 一行不動。\n後端選擇讀 settings.merge_backend（已存在，預設 ollama）。此 slice 唯一合法值是 ollama；給其他值要在啟動或呼叫時報明確錯誤，不得靜默 fallback。\n驗收：scripts/f22_regression.py 3 兩案例各 3/3；完整測試套件維持全綠；新介面有單元測試，用假後端驗證 extract() 會呼叫它並正確處理回傳，另含一條反向測試證明假後端沒被呼叫時測試會紅。\n不得引入任何新相依、不得出現 API key、不得出現 subprocess 呼叫——這個 slice 純粹是搬家。\nrollback：單一 commit revert。",
-      "status": "failing",
-      "evidence": null,
-      "signed_off": true,
-      "touches": [
-        "app/services/place_extractor.py",
-        "app/services/merge_backends.py",
-        "tests/test_merge_backend.py"
-      ]
     }
   ]
 }
