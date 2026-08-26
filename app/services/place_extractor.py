@@ -95,12 +95,14 @@ class PlaceExtractor:
       "city": "城市（繁體中文，如：台北、東京、首爾）",
       "country": "國家（繁體中文，如：台灣、日本、韓國）",
       "address": "地址（繁體中文，如有提到）",
+      "district": "行政區（如：北投；見規則 11，沒有就 null）",
       "place_type": ["地點類型（繁體中文），如：餐廳、咖啡廳、景點、博物館、公園"],
       "highlights": ["亮點（繁體中文）：推薦餐點、必看特色等"],
       "price_range": "$或$$或$$$或$$$$（如適用）",
       "recommendation": "推薦原因（繁體中文，簡短描述）",
       "tags": ["標籤（繁體中文），如：約會、打卡、親子、拍照"],
       "confidence": "high或medium或low",
+      "is_physical": "true或false（見規則 12）",
       "search_keywords": ["用於 Google Maps 搜尋的關鍵字，包含地點名稱和城市"]
     }}
   ],
@@ -133,7 +135,21 @@ class PlaceExtractor:
 10. 去重要看「是不是同一家店」，不是「字串一不一樣」。同一家店的中文名、英文名、
    招牌全名（例如「美軍炸雞」與「Padam Padam 1970」與「Padam Padam 1970 美軍炸雞」）
    **只能出現一筆**：挑最完整的當 name，其餘寫進 name_en 或 search_keywords。
-   兩個名字指同一家店卻各列一筆，會在 Google Maps 清單裡存成兩個地點。"""
+   兩個名字指同一家店卻各列一筆，會在 Google Maps 清單裡存成兩個地點。
+11. district（行政區）只填說明文或 hashtag 裡明確出現的行政區名稱（如：北投、信義、
+   大安），不得從地址、店名或畫面去推測、猜測。沒有明確提到就填 null。
+12. is_physical（是否為可實際到訪的實體店家）——這是**標記，不是要不要列入的條件**：
+   判成 false 的店家**仍然必須列在 places 裡**、found 也照常是 true，只是
+   is_physical 欄位標 false。就算整篇介紹的店家全都是非實體，places 也要列出
+   它們，**不可因此回 found=false 或空陣列**。判準：
+   - 業配的品牌／商品：冷凍食品、真空包裝、宅配到府、電商販售、沒有實體門市可去，
+     或消費場景在自己家（開箱、下鍋烹煮、冰箱囤貨、在家享用）→ false
+   - 有入座用餐、至攤位／店面點餐、實地走訪的畫面或描述 → true
+   - 判斷不了 → true。這條是刻意的：判不出來就放行，是不是真的能去、要不要存進
+     地圖，交給後面的比對步驟判斷。
+13. 回覆**必須完全依照上面給定的 JSON 結構與鍵名**：最外層只有 found、places、notes
+   三個鍵，places 裡每個地點用上面列出的欄位名，一字不差。不得自創其他結構
+   （例如 location、additional_info）、不得改鍵名、不得省略 found。"""
 
     def __init__(self):
         # 依 settings.merge_backends 建後端鏈；鏈為空或含不支援的名稱、以及

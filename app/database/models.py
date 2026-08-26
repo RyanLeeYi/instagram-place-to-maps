@@ -50,7 +50,7 @@ class Place(Base):
     tags = Column(Text, nullable=True)  # JSON array
     
     # 狀態
-    status = Column(String(20), default="pending")  # pending, confirmed, rejected
+    status = Column(String(20), default="pending")  # pending, confirmed, rejected, non_physical
     confidence = Column(String(20), nullable=True)  # high, medium, low
     
     # 時間戳記

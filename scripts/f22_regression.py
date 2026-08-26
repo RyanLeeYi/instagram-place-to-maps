@@ -22,6 +22,12 @@ FIXTURES = ROOT / "temp_videos/f22_fixtures"
 
 # 真實答案由 Ryan 2026-08-25 看過影片逐項確認，不是模型推測。
 # 蔡元益紅茶在 1:35 有實際購買飲用——原本的驗收標準把它當路過招牌是錯的。
+# 巫婆水餃是業配的冷凍水餃品牌，Google Maps 上無實體店（F28 起源案例），
+# 六家仍要全部留在 places。巫婆水餃的 is_physical 不做硬斷言——
+# 2026-08-26 #11 重簽核：qwen3:8b 兩版 prompt 共 9 次推論全判 true（能力上限），
+# 端到端守門改由 A 段兜底（其 LOW 信心有 smoke [5] 真實 API 證據，
+# 「LOW 不寫 Maps」由 tests/test_place_gating.py 釘住）。其餘五家仍必須
+# 判 true，守住「分類規則不得誤擋實體店」這一半。
 CASES = {
     "(a) DT2w2PVgXo3 北投市場": {
         "fixture": "DT2w2PVgXo3_materials.json",
@@ -34,6 +40,13 @@ CASES = {
             "巫婆水餃",
         ],
         "drop": ["北投中繼市場", "巧涼", "九份紅糟", "brunii", "KYMCO"],
+        "is_physical": {
+            "海鮮拉麵清燉豬腳": True,
+            "阿宗蚵仔煎": True,
+            "大溪家鄉臭豆腐": True,
+            "高媽媽傳統米食": True,
+            "蔡元益紅茶": True,
+        },
     },
     # 店名只出現在招牌上，逐字稿把地名聽成「位遠程序公有市場」——
     # 這條案例存在的理由就是證明 agy 補得到本地聽不出來的招牌字。
@@ -65,6 +78,26 @@ def score(names, spec):
     return missing, leaked, areas
 
 
+def check_is_physical(places, spec):
+    """比對 is_physical 是否符合 spec 期望（F28 acceptance #11）。
+
+    只有 spec 定義了 "is_physical" 期望值的案例才檢查；沒定義就不檢查（案例 (b)
+    不需要，acceptance #11 只要求案例 (a)）。回傳 (店名, 期望值, 實際值) 的清單，
+    空清單代表全對。
+    """
+    expected = spec.get("is_physical")
+    if not expected:
+        return []
+    wrong = []
+    for name_key, expect in expected.items():
+        for p in places:
+            if _norm(name_key) in _norm(p.name):
+                if p.is_physical != expect:
+                    wrong.append((p.name, expect, p.is_physical))
+                break
+    return wrong
+
+
 async def run_case(extractor, label, spec, runs):
     path = FIXTURES / spec["fixture"]
     if not path.exists():
@@ -83,14 +116,18 @@ async def run_case(extractor, label, spec, runs):
             caption=m["caption"],
             gemini_places=gemini,
         )
-        names = [p.name for p in (result.places or [])] if result.found else []
+        places = (result.places or []) if result.found else []
+        names = [p.name for p in places]
         missing, leaked, areas = score(names, spec)
-        ok = not (missing or leaked or areas)
+        wrong_physical = check_is_physical(places, spec)
+        ok = not (missing or leaked or areas or wrong_physical)
         passed += ok
         print(f"  [{i}/{runs}] {'PASS' if ok else 'FAIL'}  {names}")
         for tag, items in (("漏掉", missing), ("該濾沒濾", leaked), ("區域誤判成店家", areas)):
             if items:
                 print(f"          {tag}: {items}")
+        if wrong_physical:
+            print(f"          is_physical判斷錯誤(店名,期望,實際): {wrong_physical}")
     print(f"  小計 {passed}/{runs}")
     return passed == runs
 

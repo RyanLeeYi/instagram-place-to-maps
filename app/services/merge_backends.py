@@ -50,6 +50,12 @@ class PlaceInfo:
     tags: List[str] = field(default_factory=list)
     search_keywords: List[str] = field(default_factory=list)
 
+    # F28：源頭分類（E）與行政區查準（D）。預設 is_physical=True 是刻意的
+    # fail-open——降級路徑、_reconcile 從 agy 候選補進來的地點、任何舊呼叫端
+    # 沒有明確給值的情況，行為都要與這個欄位加入前一致（F28 acceptance #1）。
+    is_physical: bool = True
+    district: Optional[str] = None
+
 
 def norm_place_name(name: Optional[str]) -> str:
     """比對用的正規化：抹掉空白與「店」字尾。
@@ -249,7 +255,9 @@ class OllamaMergeBackend:
                     price_range=place_data.get("price_range"),
                     recommendation=place_data.get("recommendation"),
                     tags=place_data.get("tags", []),
-                    search_keywords=place_data.get("search_keywords", [])
+                    search_keywords=place_data.get("search_keywords", []),
+                    is_physical=place_data.get("is_physical", True),
+                    district=place_data.get("district"),
                 )
                 places.append(place)
 

@@ -15,7 +15,7 @@ from app.services.transcriber import WhisperTranscriber
 from app.services.visual_analyzer import VideoVisualAnalyzer
 from app.services.place_extractor import PlaceExtractor, PlaceInfo, ExtractionResult
 from app.services.gemini_video import GeminiVideoExtractor
-from app.services.google_places import GooglePlacesService
+from app.services.google_places import GooglePlacesService, PlaceSearchResult
 from app.services.google_sheets import GoogleSheetsService
 from app.services.google_maps_saver import google_maps_saver, SaveResult
 from app.database.models import Place, async_session
@@ -93,6 +93,40 @@ def escape_markdown(text: str) -> str:
     for char in special_chars:
         text = text.replace(char, f'\\{char}')
     return text
+
+
+def _build_search_query(place_info: PlaceInfo) -> str:
+    """組 Places 搜尋字串，優先序 district（非空）> city（現行）> search_keywords[0]（現行 fallback）
+    （F28 acceptance #8）。expected_name 仍另外傳純店名，不受這裡影響（F18）。
+    """
+    query = place_info.search_keywords[0] if place_info.search_keywords else place_info.name
+    if place_info.city and place_info.name:
+        query = f"{place_info.name} {place_info.city}"
+    if place_info.district and place_info.name:
+        query = f"{place_info.name} {place_info.district}"
+    return query
+
+
+def _place_status(place_info: PlaceInfo, place_result: PlaceSearchResult) -> str:
+    """DB status：非實體優先於低信心，低信心優先於 found（F28 acceptance #4、#5）。"""
+    if not place_info.is_physical:
+        return "non_physical"
+    if place_result.needs_human_check:
+        return "pending"
+    return "confirmed" if place_result.found else "pending"
+
+
+def _should_save_to_maps(place_info: PlaceInfo, place_result: PlaceSearchResult) -> bool:
+    """存 Maps 的守門：非實體或低信心一律不存（F28 acceptance #4、#5）。
+
+    不對稱性是刻意的：錯的條目要手動去 Maps 刪，漏掉的隨時能自己補，
+    所以寧可少存也不要靜默存錯。
+    """
+    return (
+        place_info.is_physical
+        and not place_result.needs_human_check
+        and bool(place_result.place_id)
+    )
 
 
 class PlaceBotHandlers:
@@ -1201,9 +1235,10 @@ class PlaceBotHandlers:
             # 準備所有地點的搜尋查詢
             async def search_place_with_info(place_info: PlaceInfo):
                 """搜尋單一地點並回傳 (place_info, place_result) 元組"""
-                search_query = place_info.search_keywords[0] if place_info.search_keywords else place_info.name
-                if place_info.city and place_info.name:
-                    search_query = f"{place_info.name} {place_info.city}"
+                search_query = _build_search_query(place_info)
+                if not place_info.is_physical:
+                    # 品牌／商品沒有實體門市，省一次 Places API 呼叫（F28 acceptance #4）
+                    return (place_info, PlaceSearchResult())
                 # 傳純店名（不含城市）當驗證基準，否則相似度會被地名稀釋（F18）
                 place_result = await self.places_service.search_place(
                     search_query, expected_name=place_info.name
@@ -1217,9 +1252,19 @@ class PlaceBotHandlers:
             ]
             search_results = await asyncio.gather(*search_tasks)
             
+            # 是否有能力存 Maps（功能啟用＋已登入），供下方逐地點決定與 log 共用
+            maps_enabled = google_maps_saver.is_enabled() and google_maps_saver.is_logged_in()
+
             # 依序處理搜尋結果（儲存資料庫、同步 Sheets）
             for place_info, place_result in search_results:
-                
+                will_save_maps = maps_enabled and _should_save_to_maps(place_info, place_result)
+                logger.info(
+                    f"地點「{place_info.name}」is_physical={place_info.is_physical} "
+                    f"match_confidence={place_result.match_confidence} "
+                    f"送Places={place_info.is_physical} 存Maps={will_save_maps} "
+                    f"搜尋字串={_build_search_query(place_info)}"
+                )
+
                 # 儲存到資料庫
                 async with async_session() as session:
                     new_place = Place(
@@ -1238,7 +1283,7 @@ class PlaceBotHandlers:
                         telegram_chat_id=str(chat_id),
                         recommendation=place_info.recommendation,
                         confidence=place_info.confidence,
-                        status="confirmed" if place_result.found else "pending"
+                        status=_place_status(place_info, place_result)
                     )
                     new_place.set_place_types(place_info.place_type)
                     new_place.set_highlights(place_info.highlights)
@@ -1271,10 +1316,10 @@ class PlaceBotHandlers:
             
             # 7.5 自動儲存至 Google Maps
             maps_save_results = []
-            if google_maps_saver.is_enabled() and google_maps_saver.is_logged_in():
+            if maps_enabled:
                 for item in processed_places:
                     place_result = item["place_result"]
-                    if place_result.place_id:
+                    if _should_save_to_maps(item["place_info"], place_result):
                         save_result = await google_maps_saver.save_to_list(place_result.place_id)
                         maps_save_results.append({
                             "place_name": item["place_info"].name,
@@ -1319,11 +1364,14 @@ class PlaceBotHandlers:
                 lines.append("")
                 lines.append(f"🗺️ *Google Maps：*")
                 lines.append(safe_maps_url)
+                if not place_info.is_physical:
+                    lines.append("品牌／商品，未存入地圖")
                 # Places 回的可能根本不是同一家（F18）——低信心要講出來，不要靜默採用
                 if place_result.needs_human_check:
                     lines.append(
                         f"🟠 *請人工確認：* Google Maps 比對到的是 "
-                        f"「{escape_markdown(place_result.name or '未知')}」，與影片中的店名不符"
+                        f"「{escape_markdown(place_result.name or '未知')}」，與影片中的店名不符\n"
+                        f"未自動存入 Maps"
                     )
                 lines.append("")
                 if place_result.rating:
@@ -1366,9 +1414,11 @@ class PlaceBotHandlers:
                     if place_result.needs_human_check:
                         lines.append(
                             f"   🟠 比對到「{escape_markdown(place_result.name or '未知')}」，"
-                            f"店名不符請人工確認"
+                            f"店名不符請人工確認，未自動存入 Maps"
                         )
-                    
+                    if not place_info.is_physical:
+                        lines.append("   品牌／商品，未存入地圖")
+
                     # 在多地點迴圈中，找到對應的儲存結果
                     for save_item in maps_save_results:
                         if save_item["place_name"] == place_info.name:
