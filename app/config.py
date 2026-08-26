@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     merge_backends: str = Field(default="ollama", env="MERGE_BACKENDS")
     merge_mode: str = Field(default="failover", env="MERGE_MODE")
 
+    # F27.3：三個 CLI 版後端（agy／claude／codex）共用的逾時（秒）與執行檔
+    # 名稱／路徑。CLI 找不到不在這裡報錯——merge() 呼叫時才知道，比照
+    # AGY_COMMAND 的既有慣例（gemini_video.py 也是找不到才在呼叫時失敗）。
+    merge_cli_timeout: int = Field(default=240, env="MERGE_CLI_TIMEOUT")
+    claude_command: str = Field(default="claude", env="CLAUDE_COMMAND")
+    codex_command: str = Field(default="codex", env="CODEX_COMMAND")
+
     @property
     def allowed_chat_ids(self) -> List[str]:
         """解析允許的 chat_id 列表"""

@@ -5,11 +5,17 @@ PlaceExtractor 組好提示詞之後，交給這裡依 settings.merge_backends �
 組裝留在 PlaceExtractor（EXTRACTION_PROMPT / format_gemini_candidates）；
 後端只管「怎麼問模型、怎麼把它的答案解析成 PlaceInfo」。
 
-F27.1 搬進來唯一實作 ollama，單一後端、行為不變。F27.2（這個 slice）把它
-擴充成「一條後端鏈 + 一種執行模式」：failover（依鏈序試到第一個成功為止）與
-vote（鏈上後端同時跑、多數決）。鏈上唯一合法名稱仍是 ollama——這個 slice
-不新增任何後端實作，多後端行為一律用假後端測；agy / claude / codex 等真正
-的第二個後端是 F27.3／F27.4 的事。
+F27.1 搬進來唯一實作 ollama，單一後端、行為不變。F27.2 把它擴充成「一條
+後端鏈 + 一種執行模式」：failover（依鏈序試到第一個成功為止）與 vote
+（鏈上後端同時跑、多數決）。
+
+F27.3（這個 slice）在 get_backend() 掛上三個 CLI 版後端（agy / claude /
+codex，見 app/services/merge_cli_backends.py），皆走已登入的訂閱 CLI
+subprocess，不引入 API key。三者共用這裡的 `parse_merge_response`（原
+`OllamaMergeBackend._parse` 抽成的模組層級函式）解析內層 JSON 文字，
+只是各自先驗過一層 CLI 自己的外層信封（status／is_error／turn 事件）
+才把文字交進來——理由與 gemini_video.py 的 agy 教訓一樣：CLI 讀不到
+輸入時會編一個像樣的答案，外層信封的成功欄位是唯一說實話的地方。
 """
 
 import asyncio
@@ -120,14 +126,27 @@ class UnsupportedMergeModeError(ValueError):
 
 
 def get_backend(name: str) -> MergeBackend:
-    """依名稱建立單一後端。目前唯一合法值是 "ollama"；
+    """依名稱建立單一後端：ollama（本地）或 agy／claude／codex（訂閱 CLI）。
 
-    給其他值在這裡就明確報錯，不靜默 fallback 回 ollama。
+    給其他值在這裡就明確報錯，不靜默 fallback。CLI 後端的 import 放在
+    函式內部——merge_cli_backends.py 反向 import 這個模組的
+    `MergeFailure`／`parse_merge_response`，模組層級互相 import 會循環。
     """
     if name == "ollama":
         return OllamaMergeBackend()
+    if name in ("agy", "claude", "codex"):
+        from app.services.merge_cli_backends import (
+            AgyMergeBackend,
+            ClaudeMergeBackend,
+            CodexMergeBackend,
+        )
+        return {
+            "agy": AgyMergeBackend,
+            "claude": ClaudeMergeBackend,
+            "codex": CodexMergeBackend,
+        }[name]()
     raise UnsupportedMergeBackendError(
-        f"不支援的合併後端 {name!r}；目前唯一支援 'ollama'"
+        f"不支援的合併後端 {name!r}；目前支援 'ollama'、'agy'、'claude'、'codex'"
     )
 
 
@@ -183,115 +202,129 @@ class OllamaMergeBackend:
         return self._parse(result_text)
 
     def _parse(self, response_text: str) -> List[PlaceInfo]:
-        """解析 LLM 回應（搬自 PlaceExtractor._parse_response，行為不變）。"""
+        """解析 LLM 回應（搬自 PlaceExtractor._parse_response，行為不變）。
+
+        F27.3：邏輯本體搬到模組層級的 `parse_merge_response`，這裡轉呼叫——
+        CLI 後端（agy/claude/codex）解析內層文字要用同一份，不得複製第二份
+        （acceptance #6）。
+        """
+        return parse_merge_response(response_text)
+
+
+def parse_merge_response(response_text: str) -> List[PlaceInfo]:
+    """解析模型回應文字為地點清單（原 OllamaMergeBackend._parse 的邏輯）。
+
+    含 markdown 圍欄剝除、JSON 修復、schema 漂移救援；找不到 JSON、JSON
+    壞掉、或模型自己說 found=false，都丟 MergeFailure 並帶上原因。
+    """
+    try:
+        # 預處理：移除可能的 markdown 程式碼區塊標記
+        cleaned_text = response_text
+        if "```json" in cleaned_text:
+            cleaned_text = re.sub(r'```json\s*', '', cleaned_text)
+            cleaned_text = re.sub(r'```\s*$', '', cleaned_text)
+        elif "```" in cleaned_text:
+            cleaned_text = re.sub(r'```\s*', '', cleaned_text)
+
+        # 嘗試找出 JSON 區塊（匹配最外層的大括號）
+        json_match = re.search(r'\{[\s\S]*\}', cleaned_text)
+        if not json_match:
+            logger.warning("回應中找不到 JSON")
+            raise MergeFailure("無法解析回應")
+
+        json_str = json_match.group()
+
+        # 嘗試修復常見的 JSON 格式問題
+        # 1. 移除尾隨逗號
+        json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
+        # 2. 修復可能的單引號問題
+        # 3. 移除註解（LLM 有時會加註解）
+        json_str = re.sub(r'//.*?(?=\n|$)', '', json_str)
+
         try:
-            # 預處理：移除可能的 markdown 程式碼區塊標記
-            cleaned_text = response_text
-            if "```json" in cleaned_text:
-                cleaned_text = re.sub(r'```json\s*', '', cleaned_text)
-                cleaned_text = re.sub(r'```\s*$', '', cleaned_text)
-            elif "```" in cleaned_text:
-                cleaned_text = re.sub(r'```\s*', '', cleaned_text)
+            data = json.loads(json_str)
+        except json.JSONDecodeError as first_error:
+            # 二次嘗試：更激進的清理
+            logger.warning(f"第一次 JSON 解析失敗，嘗試修復: {first_error}")
 
-            # 嘗試找出 JSON 區塊（匹配最外層的大括號）
-            json_match = re.search(r'\{[\s\S]*\}', cleaned_text)
-            if not json_match:
-                logger.warning("回應中找不到 JSON")
-                raise MergeFailure("無法解析回應")
+            # 嘗試只提取有效的 JSON 結構
+            # 找到 "found" 開始的部分
+            found_match = re.search(r'\{\s*"found"[\s\S]*', json_str)
+            if found_match:
+                json_str = found_match.group()
+                # 確保閉合
+                open_braces = json_str.count('{')
+                close_braces = json_str.count('}')
+                if open_braces > close_braces:
+                    json_str += '}' * (open_braces - close_braces)
 
-            json_str = json_match.group()
+                try:
+                    data = json.loads(json_str)
+                except json.JSONDecodeError as second_error:
+                    logger.error(f"JSON 解析最終失敗: {second_error}")
+                    logger.debug(f"問題 JSON: {json_str[:500]}...")
+                    raise MergeFailure(f"JSON 解析失敗: {second_error}")
+            else:
+                logger.error(f"JSON 解析失敗，無法修復: {first_error}")
+                raise MergeFailure(f"JSON 解析失敗: {first_error}")
 
-            # 嘗試修復常見的 JSON 格式問題
-            # 1. 移除尾隨逗號
-            json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
-            # 2. 修復可能的單引號問題
-            # 3. 移除註解（LLM 有時會加註解）
-            json_str = re.sub(r'//.*?(?=\n|$)', '', json_str)
+        # schema 漂移救援（F28）：format="json" 保證合法 JSON，但 8b 在降級
+        # 路徑（無 agy 候選）仍會自創頂層鍵（實測三種：「推荐店家」、
+        # 「景点/地点」、city+additional_info，且都沒有 found 鍵）。只要頂層
+        # 有「含 name 的 dict 陣列」就當 places 收下——名字是唯一不可替代的
+        # 欄位，其餘欄位缺了走 PlaceInfo 預設值（is_physical 預設 True 即
+        # fail-open，交給 A 段守門）。
+        if not data.get("places") and "place" not in data:
+            for value in data.values():
+                if (
+                    isinstance(value, list)
+                    and value
+                    and all(isinstance(x, dict) for x in value)
+                    and any(x.get("name") for x in value)
+                ):
+                    logger.warning(
+                        f"回應 schema 漂移，從自創鍵救回 {len(value)} 筆地點"
+                    )
+                    data = {"found": True, "places": value, "notes": data.get("notes")}
+                    break
 
-            try:
-                data = json.loads(json_str)
-            except json.JSONDecodeError as first_error:
-                # 二次嘗試：更激進的清理
-                logger.warning(f"第一次 JSON 解析失敗，嘗試修復: {first_error}")
+        if not data.get("found", False):
+            # 模型自己說沒找到——它附的理由是有資訊的，要送到使用者眼前
+            raise MergeFailure(data.get("notes"))
 
-                # 嘗試只提取有效的 JSON 結構
-                # 找到 "found" 開始的部分
-                found_match = re.search(r'\{\s*"found"[\s\S]*', json_str)
-                if found_match:
-                    json_str = found_match.group()
-                    # 確保閉合
-                    open_braces = json_str.count('{')
-                    close_braces = json_str.count('}')
-                    if open_braces > close_braces:
-                        json_str += '}' * (open_braces - close_braces)
+        places_data = data.get("places", [])
 
-                    try:
-                        data = json.loads(json_str)
-                    except json.JSONDecodeError as second_error:
-                        logger.error(f"JSON 解析最終失敗: {second_error}")
-                        logger.debug(f"問題 JSON: {json_str[:500]}...")
-                        raise MergeFailure(f"JSON 解析失敗: {second_error}")
-                else:
-                    logger.error(f"JSON 解析失敗，無法修復: {first_error}")
-                    raise MergeFailure(f"JSON 解析失敗: {first_error}")
+        # 向後相容：如果是舊格式（單一 place 物件）
+        if not places_data and "place" in data:
+            places_data = [data["place"]]
 
-            # schema 漂移救援（F28）：format="json" 保證合法 JSON，但 8b 在降級
-            # 路徑（無 agy 候選）仍會自創頂層鍵（實測三種：「推荐店家」、
-            # 「景点/地点」、city+additional_info，且都沒有 found 鍵）。只要頂層
-            # 有「含 name 的 dict 陣列」就當 places 收下——名字是唯一不可替代的
-            # 欄位，其餘欄位缺了走 PlaceInfo 預設值（is_physical 預設 True 即
-            # fail-open，交給 A 段守門）。
-            if not data.get("places") and "place" not in data:
-                for value in data.values():
-                    if (
-                        isinstance(value, list)
-                        and value
-                        and all(isinstance(x, dict) for x in value)
-                        and any(x.get("name") for x in value)
-                    ):
-                        logger.warning(
-                            f"回應 schema 漂移，從自創鍵救回 {len(value)} 筆地點"
-                        )
-                        data = {"found": True, "places": value, "notes": data.get("notes")}
-                        break
+        places = []
+        for place_data in places_data:
+            place = PlaceInfo(
+                confidence=place_data.get("confidence", "low"),
+                name=place_data.get("name"),
+                name_en=place_data.get("name_en"),
+                city=place_data.get("city"),
+                country=place_data.get("country"),
+                address=place_data.get("address"),
+                place_type=place_data.get("place_type", []),
+                highlights=place_data.get("highlights", []),
+                price_range=place_data.get("price_range"),
+                recommendation=place_data.get("recommendation"),
+                tags=place_data.get("tags", []),
+                search_keywords=place_data.get("search_keywords", []),
+                is_physical=place_data.get("is_physical", True),
+                district=place_data.get("district"),
+            )
+            places.append(place)
 
-            if not data.get("found", False):
-                # 模型自己說沒找到——它附的理由是有資訊的，要送到使用者眼前
-                raise MergeFailure(data.get("notes"))
+        logger.info(f"成功擷取 {len(places)} 個地點")
 
-            places_data = data.get("places", [])
+        return places
 
-            # 向後相容：如果是舊格式（單一 place 物件）
-            if not places_data and "place" in data:
-                places_data = [data["place"]]
-
-            places = []
-            for place_data in places_data:
-                place = PlaceInfo(
-                    confidence=place_data.get("confidence", "low"),
-                    name=place_data.get("name"),
-                    name_en=place_data.get("name_en"),
-                    city=place_data.get("city"),
-                    country=place_data.get("country"),
-                    address=place_data.get("address"),
-                    place_type=place_data.get("place_type", []),
-                    highlights=place_data.get("highlights", []),
-                    price_range=place_data.get("price_range"),
-                    recommendation=place_data.get("recommendation"),
-                    tags=place_data.get("tags", []),
-                    search_keywords=place_data.get("search_keywords", []),
-                    is_physical=place_data.get("is_physical", True),
-                    district=place_data.get("district"),
-                )
-                places.append(place)
-
-            logger.info(f"成功擷取 {len(places)} 個地點")
-
-            return places
-
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON 解析失敗: {e}")
-            raise MergeFailure(f"JSON 解析失敗: {e}")
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON 解析失敗: {e}")
+        raise MergeFailure(f"JSON 解析失敗: {e}")
 
 
 # --- 鏈的執行模式：failover / vote（F27.2） -------------------------------

@@ -31,6 +31,12 @@ from app.services.merge_backends import (
     merge_with_backends,
     norm_place_name,
 )
+from app.services import merge_cli_backends as mcb
+from app.services.merge_cli_backends import (
+    AgyMergeBackend,
+    ClaudeMergeBackend,
+    CodexMergeBackend,
+)
 from app.services.place_extractor import ExtractionResult, PlaceExtractor
 
 
@@ -99,7 +105,7 @@ def test_get_backend_ollama回傳ollama實作():
 
 def test_get_backend_不支援的值會明確報錯():
     with pytest.raises(UnsupportedMergeBackendError):
-        get_backend("claude")
+        get_backend("gemini")
 
 
 # --- F27.2：後端鏈與模式的建構期驗證（acceptance #2、#3）------------------
@@ -113,7 +119,7 @@ def test_鏈為空時建構丟例外(monkeypatch):
 
 def test_鏈含不支援名稱時建構丟例外(monkeypatch):
     """驗收要求：不支援的後端要在啟動時報明確錯誤，不得靜默 fallback。"""
-    monkeypatch.setattr(settings, "merge_backends", "ollama,claude")
+    monkeypatch.setattr(settings, "merge_backends", "ollama,gemini")
     with pytest.raises(UnsupportedMergeBackendError):
         PlaceExtractor()
 
@@ -552,3 +558,230 @@ def test_合併成功的log逐一列出各後端成功或失敗(caplog):
         asyncio.run(merge_with_backends([bad_first, ok_y], "prompt", "failover"))
     fo_log = next(r.message for r in caplog.records if "mode=failover" in r.message)
     assert "X:失敗" in fo_log and "Y:成功" in fo_log
+
+
+# --- F27.3：CLI 版合併後端 agy／claude／codex（acceptance #1-#7） ----------
+
+
+class _FakeCliProc:
+    """假 subprocess：communicate() 回傳固定 stdout/stderr，可延遲或丟例外。"""
+
+    def __init__(self, stdout=b"", stderr=b"", returncode=0, delay=0.0, exc=None):
+        self._stdout = stdout
+        self._stderr = stderr
+        self.returncode = returncode
+        self._delay = delay
+        self._exc = exc
+        self.killed = False
+
+    async def communicate(self):
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        if self._exc:
+            raise self._exc
+        return self._stdout, self._stderr
+
+    def kill(self):
+        self.killed = True
+
+    async def wait(self):
+        return self.returncode
+
+
+def _patch_cli(monkeypatch, proc, which_path="C:/fake/cli.exe"):
+    """把 create_subprocess_exec 與 shutil.which 都換成假的，不連外、不打真 CLI。"""
+
+    async def fake_exec(*args, **kwargs):
+        return proc
+
+    monkeypatch.setattr(mcb.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(mcb.shutil, "which", lambda cmd: which_path)
+
+
+def _codex_jsonl(*events) -> bytes:
+    return "\n".join(json.dumps(e, ensure_ascii=False) for e in events).encode("utf-8")
+
+
+def test_get_backend認得agy_claude_codex():
+    """acceptance #1：三個新名稱都要能建構出對應實作。"""
+    assert isinstance(get_backend("agy"), AgyMergeBackend)
+    assert isinstance(get_backend("claude"), ClaudeMergeBackend)
+    assert isinstance(get_backend("codex"), CodexMergeBackend)
+
+
+@pytest.mark.parametrize("cls", [AgyMergeBackend, ClaudeMergeBackend, CodexMergeBackend])
+def test_CLI執行檔不存在時轉MergeFailure而非建構期報錯(monkeypatch, cls):
+    """acceptance #1：CLI 不存在不擋建構，merge() 時才以 MergeFailure 呈現。"""
+    monkeypatch.setattr(mcb.shutil, "which", lambda cmd: None)
+    with pytest.raises(MergeFailure) as e:
+        asyncio.run(cls().merge("prompt"))
+    assert "找不到 CLI 執行檔" in e.value.notes
+
+
+@pytest.mark.parametrize("cls", [AgyMergeBackend, ClaudeMergeBackend, CodexMergeBackend])
+def test_逾時時殺掉子行程並轉MergeFailure(monkeypatch, cls):
+    """acceptance #3。"""
+    proc = _FakeCliProc(delay=999)
+    _patch_cli(monkeypatch, proc)
+    monkeypatch.setattr(settings, "merge_cli_timeout", 0.05)
+
+    with pytest.raises(MergeFailure) as e:
+        asyncio.run(cls().merge("prompt"))
+
+    assert proc.killed, "逾時要殺掉子行程"
+    assert "逾時" in e.value.notes
+
+
+def test_agy_成功時解析地點(monkeypatch):
+    envelope = json.dumps({
+        "status": "SUCCESS",
+        "response": json.dumps({"found": True, "places": [{"name": "測試店"}]}, ensure_ascii=False),
+    }, ensure_ascii=False).encode("utf-8")
+    _patch_cli(monkeypatch, _FakeCliProc(stdout=envelope))
+
+    places = asyncio.run(AgyMergeBackend().merge("prompt"))
+
+    assert [p.name for p in places] == ["測試店"]
+
+
+def test_agy_外層status不是SUCCESS時整份丟棄連內容都不看(monkeypatch):
+    """acceptance #5：agy 讀不到輸入時會編像樣的答案，status 才是唯一可信欄位。"""
+    envelope = json.dumps({
+        "status": "ERROR",
+        "error": "permission check failed for read_file",
+        "response": json.dumps({"found": True, "places": [{"name": "編造的店"}]}, ensure_ascii=False),
+    }, ensure_ascii=False).encode("utf-8")
+    _patch_cli(monkeypatch, _FakeCliProc(stdout=envelope))
+
+    with pytest.raises(MergeFailure) as e:
+        asyncio.run(AgyMergeBackend().merge("prompt"))
+
+    assert "編造的店" not in (e.value.notes or "")
+    assert "status=ERROR" in e.value.notes
+
+
+def test_agy_內層JSON壞掉時轉MergeFailure(monkeypatch):
+    envelope = json.dumps(
+        {"status": "SUCCESS", "response": "模型今天想聊天，一個大括號都沒有"},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    _patch_cli(monkeypatch, _FakeCliProc(stdout=envelope))
+
+    with pytest.raises(MergeFailure):
+        asyncio.run(AgyMergeBackend().merge("prompt"))
+
+
+def test_claude_成功時解析地點(monkeypatch):
+    envelope = json.dumps({
+        "is_error": False,
+        "result": json.dumps({"found": True, "places": [{"name": "測試店"}]}, ensure_ascii=False),
+    }, ensure_ascii=False).encode("utf-8")
+    _patch_cli(monkeypatch, _FakeCliProc(stdout=envelope))
+
+    places = asyncio.run(ClaudeMergeBackend().merge("prompt"))
+
+    assert [p.name for p in places] == ["測試店"]
+
+
+def test_claude_is_error時整份丟棄不把內容當結果(monkeypatch):
+    """acceptance #5：`is_error` 為真時，就算 `result` 欄位剛好是格式正確、
+    看起來像樣的地點 JSON，也不能被解析成真的結果——先判斷成功與否，
+    成功才碰內容，不是「內容長得像就信」。
+    """
+    fabricated_result = json.dumps(
+        {"found": True, "places": [{"name": "編造的店"}]}, ensure_ascii=False
+    )
+    envelope = json.dumps({
+        "is_error": True,
+        "subtype": "error_during_execution",
+        "result": fabricated_result,
+    }, ensure_ascii=False).encode("utf-8")
+    _patch_cli(monkeypatch, _FakeCliProc(stdout=envelope))
+
+    with pytest.raises(MergeFailure) as e:
+        asyncio.run(ClaudeMergeBackend().merge("prompt"))
+
+    assert "error_during_execution" in e.value.notes
+
+
+def test_claude_內層JSON壞掉時轉MergeFailure(monkeypatch):
+    envelope = json.dumps(
+        {"is_error": False, "result": "不是 JSON 的自然語言回覆"}, ensure_ascii=False
+    ).encode("utf-8")
+    _patch_cli(monkeypatch, _FakeCliProc(stdout=envelope))
+
+    with pytest.raises(MergeFailure):
+        asyncio.run(ClaudeMergeBackend().merge("prompt"))
+
+
+def test_codex_成功時取turn_completed內的agent_message(monkeypatch):
+    payload = json.dumps({"found": True, "places": [{"name": "測試店"}]}, ensure_ascii=False)
+    stdout = _codex_jsonl(
+        {"type": "thread.started", "thread_id": "t1"},
+        {"type": "turn.started"},
+        {"type": "item.completed", "item": {"id": "item_1", "type": "agent_message", "text": payload}},
+        {"type": "turn.completed"},
+    )
+    _patch_cli(monkeypatch, _FakeCliProc(stdout=stdout))
+
+    places = asyncio.run(CodexMergeBackend().merge("prompt"))
+
+    assert [p.name for p in places] == ["測試店"]
+
+
+def test_codex_中途警告事件不影響turn_completed後的成功判定(monkeypatch):
+    """acceptance #5：item.completed(type=error) 可能只是警告，不是失敗信號
+    （2026-08-26 對著真 codex 實測過 model metadata 找不到／skill 描述截短
+    這兩種都是這種形狀，但那次是真的失敗——這裡驗證的是「不能只憑中途出現
+    error item 就判失敗」，真正的判準是有沒有等到 turn.completed）。
+    """
+    payload = json.dumps({"found": True, "places": [{"name": "測試店"}]}, ensure_ascii=False)
+    stdout = _codex_jsonl(
+        {"type": "item.completed", "item": {"id": "item_0", "type": "error", "message": "model metadata not found"}},
+        {"type": "item.completed", "item": {"id": "item_1", "type": "agent_message", "text": payload}},
+        {"type": "turn.completed"},
+    )
+    _patch_cli(monkeypatch, _FakeCliProc(stdout=stdout))
+
+    places = asyncio.run(CodexMergeBackend().merge("prompt"))
+
+    assert [p.name for p in places] == ["測試店"]
+
+
+def test_codex_turn_failed時整份丟棄不把內容當結果(monkeypatch):
+    """acceptance #5：即使串流裡出現過格式正確的 agent_message，只要終局是
+    turn.failed，就不能被解析成真的結果。"""
+    fabricated = json.dumps({"found": True, "places": [{"name": "編造的店"}]}, ensure_ascii=False)
+    stdout = _codex_jsonl(
+        {"type": "item.completed", "item": {"id": "item_1", "type": "agent_message", "text": fabricated}},
+        {"type": "error", "message": "boom"},
+        {"type": "turn.failed", "error": {"message": "boom"}},
+    )
+    _patch_cli(monkeypatch, _FakeCliProc(stdout=stdout, returncode=1))
+
+    with pytest.raises(MergeFailure) as e:
+        asyncio.run(CodexMergeBackend().merge("prompt"))
+
+    assert "boom" in e.value.notes
+
+
+def test_codex_沒有turn_completed時判定失敗(monkeypatch):
+    """輸出被截斷或整串跑完都沒等到終局事件，一樣不能當成功。"""
+    stdout = _codex_jsonl({"type": "thread.started", "thread_id": "t1"})
+    _patch_cli(monkeypatch, _FakeCliProc(stdout=stdout))
+
+    with pytest.raises(MergeFailure) as e:
+        asyncio.run(CodexMergeBackend().merge("prompt"))
+
+    assert "turn.completed" in e.value.notes
+
+
+def test_codex_內層JSON壞掉時轉MergeFailure(monkeypatch):
+    stdout = _codex_jsonl(
+        {"type": "item.completed", "item": {"id": "item_1", "type": "agent_message", "text": "不是 JSON"}},
+        {"type": "turn.completed"},
+    )
+    _patch_cli(monkeypatch, _FakeCliProc(stdout=stdout))
+
+    with pytest.raises(MergeFailure):
+        asyncio.run(CodexMergeBackend().merge("prompt"))
