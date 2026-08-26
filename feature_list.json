@@ -16,6 +16,37 @@
         "tests/test_merge_backend.py"
       ],
       "envelope": true
+    },
+    {
+      "id": "F27.3",
+      "name": "三家 CLI 版後端（agy / claude / codex，訂閱認證）",
+      "prerequisites": ["F27", "F27.2"],
+      "acceptance": "【scope】合併階段新增三個 CLI 版後端：agy / claude / codex，皆走已登入的訂閱 CLI（subprocess），不引入 API key 或新相依。不動 _reconcile、EXTRACTION_PROMPT、讀影片那格；ollama 仍為預設，MERGE_BACKENDS 未設時行為不變。\n1. get_backend 認得 \"agy\"、\"claude\"、\"codex\"；未知名稱照舊丟 UnsupportedMergeBackendError。CLI 執行檔不存在不在建構時報錯，merge() 時以 MergeFailure（訊息指明找不到 CLI）呈現，鏈上其他後端照常降級。\n2. 三後端實作 MergeBackend 契約：吃組好的 prompt、回 List[PlaceInfo]，失敗丟 MergeFailure 且 notes 可讀。\n3. subprocess 一律 asyncio.create_subprocess_exec（不經 shell）、有逾時（config 新增 MERGE_CLI_TIMEOUT，config.py 唯一 env 入口）；逾時殺掉子行程並轉 MergeFailure。\n4. 合併 prompt 可達數 KB：傳遞方式必須實測 8KB 以上 prompt 可用（Windows argv 有長度上限），acceptance 證據附一次 >=8KB prompt 的實跑。\n5. 外層信封先驗再信（agy 教訓：讀不到輸入時會編造像樣的答案）：各 CLI 的包裝輸出（agy 的 status 欄、claude --output-format json 的錯誤欄、codex 的錯誤事件）必須先判定成功才碰內容；錯誤時整份丟棄轉 MergeFailure，不得把編造內容當結果。\n6. JSON 內容解析重用 OllamaMergeBackend._parse（抽成共用函式，含 markdown 圍欄剝除與 schema 漂移救援），不得複製第二份。\n7. 單元測試：三後端各以假 subprocess（monkeypatch）涵蓋成功、CLI 不存在、逾時、外層 status 錯誤、內層 JSON 壞掉至少各一條；不打真 CLI。\n8. 真 CLI 冒煙：三家各實跑一次同一份 prompt 並貼輸出；某家實測不可用時如實記錄原因並標已知限制，不擋收官（envelope 要求缺席自動降級，不要求三家都活著）。claude / codex 的正確旗標組合寫進 docs。\n9. 回歸：pytest 基準 170 passed / 2 skipped 只增不減；scripts/f22_regression.py 兩案例各 3/3（MERGE_BACKENDS 未設走 ollama，證明預設路徑無感）。\n10. rollback：本 slice 單一 commit，revert 後 pytest 與 f22 回歸回到基準。\n11. 停止條件：同一阻塞失敗兩次即停下回報；fix/reverify 上限 3 輪。",
+      "status": "failing",
+      "evidence": null,
+      "signed_off": true,
+      "touches": [
+        "app/services/merge_backends.py",
+        "app/config.py",
+        "tests/test_merge_backend.py",
+        ".env.example"
+      ]
+    },
+    {
+      "id": "F27.4",
+      "name": "三家 SDK 版後端與金鑰管理（API key 認證）",
+      "prerequisites": ["F27", "F27.3"],
+      "acceptance": "【scope】三家 SDK 版後端與金鑰管理。名稱 agy-api / claude-api / codex-api，對應 antigravity-sdk-python（GEMINI_API_KEY）、anthropic（ANTHROPIC_API_KEY）、openai（OPENAI_API_KEY）。不動讀影片那格、_reconcile、F22 案例標準。\n1. config.py 新增三個 key 欄位（唯一 env 入口），留空＝停用該後端：merge() 以 MergeFailure「未設定 <ENV名>」呈現，鏈照常降級，啟動不炸。log 與例外訊息不得洩漏 key 內容（mission-control F53 前例：例外訊息帶含 token 的 URL 被存下再送出）。\n2. get_backend 認得三個 -api 名稱；.env.example 註明各 key 用途與留空行為。\n3. requirements.txt 釘版新增三個 SDK；init.ps1 走同一 pip install，不另外改。\n4. 呼叫帶逾時；401 / 429 / 5xx / 逾時一律收斂成 MergeFailure 且 notes 可讀。\n5. JSON 內容解析共用 F27.3 抽出的那份，不得複製。\n6. 單元測試：三後端各以假 client 涵蓋成功、缺 key、API 錯誤、JSON 壞掉；不打真 API。\n7. 真 API 冒煙：有 key 的家實跑一次並貼輸出；沒 key 的標未驗並記 handoff，不擋收官（現況 .env 三把 key 都沒有，預期全標未驗）。\n8. 回歸：pytest 只增不減；f22_regression.py 兩案例各 3/3。\n9. rollback：單一 commit，revert 後回到基準。\n10. 停止條件：同一阻塞失敗兩次即停；fix/reverify 上限 3 輪。",
+      "status": "failing",
+      "evidence": null,
+      "signed_off": true,
+      "touches": [
+        "app/services/merge_backends.py",
+        "app/config.py",
+        "tests/test_merge_backend.py",
+        ".env.example",
+        "requirements.txt"
+      ]
     }
   ]
 }
