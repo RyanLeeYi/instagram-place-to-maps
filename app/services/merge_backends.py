@@ -1,20 +1,23 @@
 """合併階段的模型後端（F27）。
 
-PlaceExtractor 組好提示詞之後，交給這裡依 settings.merge_backend 選出的後端
+PlaceExtractor 組好提示詞之後，交給這裡依 settings.merge_backends 建的後端鏈
 跑推論，換回結構化地點清單。不同後端吃同一份提示詞才比得出差異，所以提示詞
 組裝留在 PlaceExtractor（EXTRACTION_PROMPT / format_gemini_candidates）；
 後端只管「怎麼問模型、怎麼把它的答案解析成 PlaceInfo」。
 
-這個 slice（F27.1）唯一實作是 ollama——現有呼叫原樣搬過來，行為不變。
-agy / claude / codex 後端與備援鏈、投票這些是後面的 slice，這裡不做。
+F27.1 搬進來唯一實作 ollama，單一後端、行為不變。F27.2（這個 slice）把它
+擴充成「一條後端鏈 + 一種執行模式」：failover（依鏈序試到第一個成功為止）與
+vote（鏈上後端同時跑、多數決）。鏈上唯一合法名稱仍是 ollama——這個 slice
+不新增任何後端實作，多後端行為一律用假後端測；agy / claude / codex 等真正
+的第二個後端是 F27.3／F27.4 的事。
 """
 
 import asyncio
 import json
 import logging
 import re
-from dataclasses import dataclass, field
-from typing import List, Optional, Protocol
+from dataclasses import dataclass, field, fields as dc_fields
+from typing import Dict, List, NamedTuple, Optional, Protocol, Tuple
 
 import ollama
 
@@ -48,6 +51,19 @@ class PlaceInfo:
     search_keywords: List[str] = field(default_factory=list)
 
 
+def norm_place_name(name: Optional[str]) -> str:
+    """比對用的正規化：抹掉空白與「店」字尾。
+
+    「巫婆水餃」與「巫婆水餃店」是同一家，不該因為多一個字被當成兩筆。
+
+    F27.1 這條原本是 PlaceExtractor._norm_name（_reconcile 用它去重）；
+    F27.2 vote 模式的記票鍵也要用同一套正規化，所以搬成這裡的模組層級函式，
+    PlaceExtractor._norm_name 保留為轉呼叫的 staticmethod，_reconcile 的內容
+    不用改一行。
+    """
+    return (name or "").replace(" ", "").strip().rstrip("店")
+
+
 class MergeFailure(Exception):
     """後端沒能產出地點清單，`notes` 是要讓使用者看到的原因。
 
@@ -72,35 +88,61 @@ class MergeBackend(Protocol):
     """輸入組好的提示詞，輸出解析後的地點清單。
 
     解析失敗（找不到 JSON、JSON 壞掉、模型自己說 found=false）丟 `MergeFailure`
-    並帶上原因，由 PlaceExtractor 轉成 notes；它接住之後仍會跑 _reconcile，
-    用 agy 候選補救，不會因為本地模型這一步輸出爛掉就整段中斷。
-    真正的「呼叫本身失敗」（連線問題、SDK 參數不合等）照舊讓例外往上拋，
-    PlaceExtractor.extract() 的 try/except 會接住並轉成
-    ExtractionResult(found=False, notes=...)。
+    並帶上原因。在 F27.2 的鏈式執行下，這與任何其他例外、或回傳空清單一樣，
+    都由 `merge_with_backends()` 接住當作「這個後端失敗」處理，往鏈上下一個
+    後端試（failover）或不計入這次投票（vote）；只有整條鏈都失敗，才會由
+    `merge_with_backends()` 重新丟出 `MergeFailure`，PlaceExtractor 接住之後
+    仍會跑 _reconcile，用 agy 候選補救，不會因為本地模型這一步輸出爛掉就
+    整段中斷。
+
+    `name` 是這個後端在鏈上的識別名稱，供 failover/vote 的 log 與
+    ExtractionResult.backend_note 使用。
     """
+
+    name: str
 
     async def merge(self, prompt: str) -> List[PlaceInfo]:
         ...
 
 
 class UnsupportedMergeBackendError(ValueError):
-    """settings.merge_backend 給了目前不支援的值。"""
+    """settings.merge_backends 鏈裡有不支援的名稱，或鏈本身是空的。"""
+
+
+class UnsupportedMergeModeError(ValueError):
+    """settings.merge_mode 給了 failover / vote 以外的值。"""
 
 
 def get_backend(name: str) -> MergeBackend:
-    """依名稱建立後端。這個 slice 唯一合法值是 "ollama"；
+    """依名稱建立單一後端。目前唯一合法值是 "ollama"；
 
     給其他值在這裡就明確報錯，不靜默 fallback 回 ollama。
     """
     if name == "ollama":
         return OllamaMergeBackend()
     raise UnsupportedMergeBackendError(
-        f"不支援的合併後端 merge_backend={name!r}；目前唯一支援 'ollama'"
+        f"不支援的合併後端 {name!r}；目前唯一支援 'ollama'"
     )
+
+
+def get_backend_chain(chain: str) -> List[MergeBackend]:
+    """依 MERGE_BACKENDS（逗號分隔的名稱鏈）建立後端鏈。
+
+    鏈為空、或含不支援的名稱，都在這裡（PlaceExtractor 建構時呼叫）明確
+    報錯，不靜默 fallback（F27.2 acceptance #2）。
+    """
+    names = [n.strip() for n in chain.split(",") if n.strip()]
+    if not names:
+        raise UnsupportedMergeBackendError(
+            f"合併後端鏈不可為空：MERGE_BACKENDS={chain!r}"
+        )
+    return [get_backend(name) for name in names]
 
 
 class OllamaMergeBackend:
     """現有的 ollama 呼叫，原樣搬過來（F27.1：純粹搬家，行為不變）。"""
+
+    name = "ollama"
 
     def __init__(self):
         self.model = settings.ollama_model
@@ -218,3 +260,168 @@ class OllamaMergeBackend:
         except json.JSONDecodeError as e:
             logger.error(f"JSON 解析失敗: {e}")
             raise MergeFailure(f"JSON 解析失敗: {e}")
+
+
+# --- 鏈的執行模式：failover / vote（F27.2） -------------------------------
+
+
+class _BackendCallResult(NamedTuple):
+    """單一後端呼叫的結果，把例外／MergeFailure／空清單都收斂成同一種形狀，
+    讓 failover／vote 不用各自處理三種失敗來源。"""
+
+    name: str
+    places: Optional[List[PlaceInfo]]  # None 表示失敗；成功時保證非空
+    failure_reason: Optional[str]
+
+
+async def _call_backend(backend: MergeBackend, prompt: str) -> _BackendCallResult:
+    """呼叫單一後端，把失敗（丟例外／MergeFailure／回傳空清單）都轉成
+    `_BackendCallResult(places=None, failure_reason=...)`，不往外拋——
+    鏈上一個後端失敗不該讓整次合併中斷（acceptance #8）。
+    """
+    try:
+        places = await backend.merge(prompt)
+    except MergeFailure as e:
+        return _BackendCallResult(backend.name, None, e.notes or str(e))
+    except Exception as e:
+        return _BackendCallResult(backend.name, None, str(e))
+    if not places:
+        # 後端解析成功但一家都沒抓到，鏈上下一個仍值得問（acceptance #8）
+        return _BackendCallResult(backend.name, None, "回傳空清單")
+    return _BackendCallResult(backend.name, places, None)
+
+
+def _failure_notes(outcomes: List[_BackendCallResult]) -> str:
+    """全部後端都失敗時的 notes：逐一列出每個後端的名稱與失敗原因，
+    不得只留最後一個、也不得退化成通用文案（acceptance #9）。"""
+    return "；".join(f"{o.name}：{o.failure_reason}" for o in outcomes)
+
+
+async def _run_failover(
+    backends: List[MergeBackend], prompt: str
+) -> Tuple[List[PlaceInfo], str]:
+    """依鏈設定順序逐一呼叫，第一個回傳非空清單的就是答案；
+
+    其後的後端不得被呼叫（acceptance #7）——for 迴圈找到答案就立刻
+    return，本來就不會呼叫到後面的項目。
+    """
+    outcomes: List[_BackendCallResult] = []
+    for backend in backends:
+        result = await _call_backend(backend, prompt)
+        if result.places is not None:
+            # 各後端逐一標成功/失敗（acceptance #18），不能只列名稱靠位置隱含推斷
+            attempts = "；".join(
+                [f"{o.name}:失敗({o.failure_reason})" for o in outcomes]
+                + [f"{result.name}:成功"]
+            )
+            logger.info(
+                f"合併完成 mode=failover 採用後端={result.name} 各後端={attempts}"
+            )
+            return result.places, f"採用後端：{result.name}"
+        outcomes.append(result)
+
+    logger.info(f"合併失敗 mode=failover 各後端原因={outcomes}")
+    raise MergeFailure(_failure_notes(outcomes))
+
+
+def _merge_place_fields(base: PlaceInfo, addition: PlaceInfo) -> PlaceInfo:
+    """欄位級合併：base 的非空值優先，只用 addition 補 base 的空值。
+
+    「鏈設定順序中第一個有非空值的後端的值」（acceptance #14）——呼叫端
+    依鏈順序把同一個地點的多筆來源依序疊上來，base 永遠是目前為止順序
+    較前面的那份。
+    """
+    merged = {
+        f.name: getattr(base, f.name) or getattr(addition, f.name)
+        for f in dc_fields(PlaceInfo)
+    }
+    return PlaceInfo(**merged)
+
+
+def _tally_votes(
+    succeeded: List[_BackendCallResult],
+) -> Tuple[List[PlaceInfo], Dict[str, int]]:
+    """統計嚴格多數決：count >= floor(n/2)+1 才保留（acceptance #12）。
+
+    依 `succeeded`（已經是鏈設定順序，見 `_run_vote` 的 asyncio.gather）
+    逐一處理，記票鍵是 norm_place_name(name)；同一後端內同名只算一票
+    （acceptance #13）；輸出順序與欄位取值都依鏈設定順序，不依完成順序
+    （acceptance #14）。回傳 (kept_places, 每個後端投的票數)。
+    """
+    n = len(succeeded)
+    threshold = n // 2 + 1
+
+    votes: Dict[str, int] = {}
+    merged: Dict[str, PlaceInfo] = {}
+    order: List[str] = []
+    backend_vote_counts: Dict[str, int] = {}
+
+    for result in succeeded:
+        seen_this_backend = set()
+        for place in result.places:
+            key = norm_place_name(place.name)
+            if key in seen_this_backend:
+                continue
+            seen_this_backend.add(key)
+            votes[key] = votes.get(key, 0) + 1
+            if key not in merged:
+                merged[key] = place
+                order.append(key)
+            else:
+                merged[key] = _merge_place_fields(merged[key], place)
+        backend_vote_counts[result.name] = len(seen_this_backend)
+
+    kept = [merged[key] for key in order if votes[key] >= threshold]
+    return kept, backend_vote_counts
+
+
+async def _run_vote(
+    backends: List[MergeBackend], prompt: str
+) -> Tuple[List[PlaceInfo], str]:
+    """鏈上所有後端同時呼叫（asyncio 併發，不是迴圈依序 await），
+    多數決後回傳結果（acceptance #10）。
+    """
+    outcomes = await asyncio.gather(
+        *(_call_backend(backend, prompt) for backend in backends)
+    )
+    succeeded = [o for o in outcomes if o.places is not None]
+
+    if not succeeded:
+        logger.info(f"合併失敗 mode=vote 各後端原因={list(outcomes)}")
+        raise MergeFailure(_failure_notes(list(outcomes)))
+
+    places, backend_vote_counts = _tally_votes(succeeded)
+    backend_note = "投票後端：" + "、".join(
+        f"{o.name}({backend_vote_counts[o.name]}票)" for o in succeeded
+    )
+    n = len(succeeded)
+    # 各後端逐一標成功/失敗（acceptance #18）——失敗的後端不計入 n，
+    # 但它被呼叫過，log 不能把它略去
+    attempts = "；".join(
+        f"{o.name}:成功({backend_vote_counts[o.name]}票)"
+        if o.places is not None
+        else f"{o.name}:失敗({o.failure_reason})"
+        for o in outcomes
+    )
+    logger.info(
+        f"合併完成 mode=vote 門檻={n // 2 + 1}/{n} "
+        f"各後端={attempts} 採用={[p.name for p in places]}"
+    )
+    return places, backend_note
+
+
+async def merge_with_backends(
+    backends: List[MergeBackend], prompt: str, mode: str
+) -> Tuple[List[PlaceInfo], Optional[str]]:
+    """依 mode 跑後端鏈，回傳 (places, backend_note)。
+
+    - failover：依鏈序試到第一個成功為止
+    - vote：鏈上後端同時跑，嚴格多數決
+    全部後端都失敗（丟例外、丟 MergeFailure、或回傳空清單）時丟
+    `MergeFailure`，notes 逐一列出每個後端的名稱與失敗原因。
+    """
+    if mode == "vote":
+        return await _run_vote(backends, prompt)
+    if mode == "failover":
+        return await _run_failover(backends, prompt)
+    raise UnsupportedMergeModeError(f"不支援的合併模式：{mode!r}")

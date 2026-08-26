@@ -4,8 +4,15 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional, List
 
-from app.config import settings
-from app.services.merge_backends import MergeFailure, PlaceInfo, get_backend
+from app.config import runtime_settings, settings
+from app.services.merge_backends import (
+    MergeFailure,
+    PlaceInfo,
+    UnsupportedMergeModeError,
+    get_backend_chain,
+    merge_with_backends,
+    norm_place_name,
+)
 
 # PlaceInfo 定義搬到 merge_backends.py（F27.1：後端要用它組裝回傳值），
 # 這裡 re-export 是為了讓既有的 `from app.services.place_extractor import
@@ -22,7 +29,8 @@ class ExtractionResult:
     found: bool = False
     places: List[PlaceInfo] = field(default_factory=list)
     notes: Optional[str] = None
-    
+    backend_note: Optional[str] = None  # F27.2：這次合併實際用了哪個/哪些後端
+
     @property
     def error_message(self) -> Optional[str]:
         """失敗原因；found=True 時為 None。
@@ -128,9 +136,22 @@ class PlaceExtractor:
    兩個名字指同一家店卻各列一筆，會在 Google Maps 清單裡存成兩個地點。"""
 
     def __init__(self):
-        # 依 settings.merge_backend 選後端；不支援的值在這裡（建構時）就報錯，
-        # 不等到真的呼叫才發現（F27 acceptance：不得靜默 fallback）。
-        self._backend = get_backend(settings.merge_backend)
+        # 依 settings.merge_backends 建後端鏈；鏈為空或含不支援的名稱、以及
+        # MERGE_MODE 不合法，都在這裡（建構時）就報錯，不等到真的呼叫才發現
+        # （F27.2 acceptance #2、#3：不得靜默 fallback）。
+        #
+        # self（這個物件本身）是長生命週期的——handlers.py 只在啟動時建構一次、
+        # 活到 bot 結束，所以鏈的內容只讀 env 這件事沒問題（要換鏈本來就該
+        # 重啟），但合併「模式」不能比照辦理：/mergemode 要能在運行中切換，
+        # 因此模式不在這裡快取，改成每次 extract() 都讀
+        # runtime_settings.merge_mode（見下）。這裡驗證的是 MERGE_MODE 的
+        # env 預設值本身合不合法，不是 runtime_settings 當下的覆寫值。
+        self._backends = get_backend_chain(settings.merge_backends)
+        if settings.merge_mode not in runtime_settings.MERGE_MODE_OPTIONS:
+            raise UnsupportedMergeModeError(
+                f"不支援的合併模式 MERGE_MODE={settings.merge_mode!r}；"
+                f"僅支援 {runtime_settings.MERGE_MODE_OPTIONS}"
+            )
 
     @staticmethod
     def format_gemini_candidates(gemini_places: Optional[List] = None) -> str:
@@ -181,20 +202,28 @@ class PlaceExtractor:
         )
         
         notes = None
+        backend_note = None
         try:
-            # 呼叫後端拿到結構化地點清單，再用確定性規則收斂（模型的判斷不是最終權威）
-            places = await self._backend.merge(prompt)
+            # 依 runtime_settings.merge_mode 跑後端鏈，再用確定性規則收斂
+            # （模型的判斷不是最終權威）。每次都重讀 merge_mode、不快取，
+            # /mergemode 才能在運行中切換而不必重啟（見 __init__ 的說明）。
+            places, backend_note = await merge_with_backends(
+                self._backends, prompt, runtime_settings.merge_mode
+            )
         except MergeFailure as e:
-            # 後端沒產出清單，但它給的理由要送到使用者眼前（handlers 的「備註」那行）。
-            # 這裡不能提前 return——舊版在解析失敗時照樣跑 _reconcile，agy 候選
-            # 還救得回來，found 甚至可能翻回 True。搬家時弄丟過這段，2026-08-25 驗收抓到。
+            # 整條鏈都沒產出清單，但每個後端各自的理由要送到使用者眼前
+            # （handlers 的「備註」那行）。這裡不能提前 return——舊版在解析
+            # 失敗時照樣跑 _reconcile，agy 候選還救得回來，found 甚至可能翻回
+            # True。搬家時弄丟過這段，2026-08-25 驗收抓到。
             places, notes = [], e.notes
         except Exception as e:
             logger.error(f"擷取地點失敗: {e}")
             return ExtractionResult(found=False, notes=str(e))
 
         places = self._reconcile(places, gemini_places)
-        return ExtractionResult(found=bool(places), places=places, notes=notes)
+        return ExtractionResult(
+            found=bool(places), places=places, notes=notes, backend_note=backend_note
+        )
     
     # 區域名不是店家（驗收標準明文）。8b 會把逐字稿與 hashtag 裡的市場名當成
     # 一家店塞進來，實測三次全中（「北投市場」「北投中繼市場」）。這條寫在提示詞
@@ -204,11 +233,13 @@ class PlaceExtractor:
 
     @staticmethod
     def _norm_name(name: Optional[str]) -> str:
-        """比對用的正規化：抹掉空白與「店」字尾。
+        """比對用的正規化：轉呼叫 merge_backends.norm_place_name。
 
-        「巫婆水餃」與「巫婆水餃店」是同一家，不該因為多一個字被當成兩筆。
+        F27.2 把這個邏輯搬去 merge_backends.py 給 vote 模式的記票鍵共用
+        （不能兩個模組各留一份，會漂移）；這裡保留 staticmethod 是為了讓
+        _reconcile 的內容一行不動。
         """
-        return (name or "").replace(" ", "").strip().rstrip("店")
+        return norm_place_name(name)
 
     def _reconcile(self, places: List[PlaceInfo], gemini_places: Optional[List] = None) -> List[PlaceInfo]:
         """用 agy 的判斷收斂 8b 的輸出。

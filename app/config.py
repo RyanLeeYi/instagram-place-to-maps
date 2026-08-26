@@ -58,9 +58,14 @@ class Settings(BaseSettings):
     # 重試不得讓總時長無上限。0 表示用 gemini_video_timeout * agy_max_attempts 推算。
     agy_total_timeout: int = Field(default=0, env="AGY_TOTAL_TIMEOUT")
 
-    # 合併階段的模型後端（F27）。目前唯一合法值是 ollama；
-    # 給不認得的值要明確報錯，不得靜默 fallback。
-    merge_backend: str = Field(default="ollama", env="MERGE_BACKEND")
+    # 合併階段的後端鏈與執行模式（F27.2）。MERGE_BACKENDS 是逗號分隔的後端
+    # 名稱鏈，目前唯一合法名稱是 ollama；鏈為空或含不認得的名稱、
+    # MERGE_MODE 不是 failover/vote，都在 PlaceExtractor 建構時明確報錯，
+    # 不得靜默 fallback。鏈的內容只讀 env，不可運行時改；MERGE_MODE 的
+    # env 預設值可在運行中被 /mergemode 透過 runtime_settings 覆寫（見
+    # RuntimeSettings.merge_mode）。
+    merge_backends: str = Field(default="ollama", env="MERGE_BACKENDS")
+    merge_mode: str = Field(default="failover", env="MERGE_MODE")
 
     @property
     def allowed_chat_ids(self) -> List[str]:
@@ -119,6 +124,10 @@ class RuntimeSettings:
         "detailed": 1.0,  # 詳細模式：每 1 秒一幀
     }
 
+    # 合併模式合法值（F27.2）。/mergemode 與 runtime_settings.json 都要擋
+    # 這份清單以外的值。
+    MERGE_MODE_OPTIONS = ("failover", "vote")
+
     def __init__(self):
         """初始化運行時設定"""
         import json
@@ -130,6 +139,7 @@ class RuntimeSettings:
         self._frame_interval_seconds: float = 2.0
         self._google_maps_list: str = None
         self._use_auto_mode: bool = False
+        self._merge_mode: str = None  # None 表示未覆寫，讀 settings.merge_mode
 
         # 設定檔路徑
         self._settings_file = Path("./runtime_settings.json")
@@ -148,6 +158,18 @@ class RuntimeSettings:
                     self._frame_interval_seconds = data.get('frame_interval_seconds', 2.0)
                     self._google_maps_list = data.get('google_maps_list', None)
                     self._use_auto_mode = data.get('use_auto_mode', False)
+
+                    merge_mode = data.get('merge_mode', None)
+                    if merge_mode is not None and merge_mode not in self.MERGE_MODE_OPTIONS:
+                        # 持久化檔案可能損毀或被手動改壞；這是運行期資料，不是
+                        # 啟動期設定錯誤，不能讓運行中的 bot 崩潰（F27.2 acceptance #6）。
+                        self._logger.warning(
+                            f"runtime_settings.json 中的 merge_mode={merge_mode!r} 不合法，"
+                            f"退回 MERGE_MODE 設定值"
+                        )
+                        merge_mode = None
+                    self._merge_mode = merge_mode
+
                     self._logger.info(f"已載入運行時設定: google_maps_list={self._google_maps_list}")
             except Exception as e:
                 self._logger.warning(f"載入運行時設定失敗: {e}")
@@ -161,6 +183,7 @@ class RuntimeSettings:
                 'frame_interval_seconds': self._frame_interval_seconds,
                 'google_maps_list': self._google_maps_list,
                 'use_auto_mode': self._use_auto_mode,
+                'merge_mode': self._merge_mode,
             }
             with open(self._settings_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -249,6 +272,34 @@ class RuntimeSettings:
         """重設為 .env 預設清單"""
         self._google_maps_list = None
         self._save_settings()
+
+    @property
+    def merge_mode(self) -> str:
+        """取得目前的合併執行模式
+
+        優先使用 runtime_settings 的覆寫值，沒有就用 MERGE_MODE 的 env 預設值
+        （比照 google_maps_list 的既有慣例，google_maps_saver.py:498）。
+        PlaceExtractor 每次 extract() 都讀這個 property，不在建構時快取。
+        """
+        if self._merge_mode is not None:
+            return self._merge_mode
+        return settings.merge_mode
+
+    def set_merge_mode(self, mode: str) -> bool:
+        """設定合併執行模式
+
+        Args:
+            mode: failover 或 vote
+
+        Returns:
+            bool: 是否設定成功
+        """
+        if mode not in self.MERGE_MODE_OPTIONS:
+            return False
+        self._merge_mode = mode
+        self._save_settings()
+        self._logger.info(f"已設定合併模式為: {self._merge_mode}")
+        return True
 
 
 # 建立全域運行時設定實例

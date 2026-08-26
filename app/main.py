@@ -85,11 +85,13 @@ async def lifespan(app: FastAPI):
     bot_app.add_handler(CommandHandler("help", handlers.help_handler))
     bot_app.add_handler(CommandHandler("list", handlers.list_handler))
     bot_app.add_handler(CommandHandler("frames", handlers.frames_handler))
+    bot_app.add_handler(CommandHandler("mergemode", handlers.mergemode_handler))
     bot_app.add_handler(CommandHandler("savelist", handlers.savelist_handler))
     bot_app.add_handler(CommandHandler("mychatid", handlers.mychatid_handler))
     bot_app.add_handler(CommandHandler("setup_google", handlers.setup_google_handler))
     bot_app.add_handler(CommandHandler("logout_google", handlers.logout_google_handler))
     bot_app.add_handler(CallbackQueryHandler(handlers.frames_callback_handler, pattern="^frames_"))
+    bot_app.add_handler(CallbackQueryHandler(handlers.mergemode_callback_handler, pattern="^mergemode_"))
     bot_app.add_handler(CallbackQueryHandler(handlers.savelist_callback_handler, pattern="^savelist_"))
     bot_app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,

@@ -417,6 +417,95 @@ class PlaceBotHandlers:
         else:
             await query.edit_message_text("❌ 切換失敗")
     
+    async def mergemode_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        處理 /mergemode 指令 - 切換合併階段的執行模式（F27.2）
+
+        用法：
+            /mergemode - 顯示當前設定
+            /mergemode failover - 依鏈設定順序試到第一個成功為止
+            /mergemode vote - 鏈上後端同時跑，多數決
+        """
+        from app.config import runtime_settings
+
+        chat_id = update.effective_chat.id
+
+        if not self._is_authorized(chat_id):
+            await update.message.reply_text("未授權的使用者")
+            return
+
+        args = context.args
+
+        if not args:
+            current_mode = runtime_settings.merge_mode
+            keyboard = [
+                [
+                    InlineKeyboardButton("Failover" + (" (使用中)" if current_mode == "failover" else ""), callback_data="mergemode_failover"),
+                    InlineKeyboardButton("Vote" + (" (使用中)" if current_mode == "vote" else ""), callback_data="mergemode_vote"),
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            message = f"""*合併模式設定*
+
+*目前模式：* `{current_mode}`
+*說明：* {"依鏈設定順序試到第一個成功為止" if current_mode == "failover" else "鏈上後端同時跑，多數決"}
+
+點擊下方按鈕切換模式"""
+
+            await update.message.reply_text(message, parse_mode="MarkdownV2", reply_markup=reply_markup)
+            return
+
+        mode = args[0].lower()
+
+        if runtime_settings.set_merge_mode(mode):
+            await update.message.reply_text(
+                f"已切換至 *{mode}* 模式",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(
+                "無效的模式\n\n可用選項：`failover`、`vote`",
+                parse_mode="Markdown"
+            )
+
+    async def mergemode_callback_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """處理 /mergemode inline keyboard 按鈕點擊"""
+        from app.config import runtime_settings
+
+        query = update.callback_query
+        await query.answer()
+
+        chat_id = update.effective_chat.id
+        if not self._is_authorized(chat_id):
+            await query.edit_message_text("未授權的使用者")
+            return
+
+        if not query.data.startswith("mergemode_"):
+            return
+
+        mode = query.data.replace("mergemode_", "")
+
+        if runtime_settings.set_merge_mode(mode):
+            keyboard = [
+                [
+                    InlineKeyboardButton("Failover" + (" (使用中)" if mode == "failover" else ""), callback_data="mergemode_failover"),
+                    InlineKeyboardButton("Vote" + (" (使用中)" if mode == "vote" else ""), callback_data="mergemode_vote"),
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            message = f"""*合併模式設定*
+
+*目前模式：* `{mode}`
+*說明：* {"依鏈設定順序試到第一個成功為止" if mode == "failover" else "鏈上後端同時跑，多數決"}
+
+已切換至 *{mode}* 模式"""
+
+            await query.edit_message_text(message, parse_mode="MarkdownV2", reply_markup=reply_markup)
+        else:
+            await query.edit_message_text("切換失敗")
+
     async def savelist_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         處理 /savelist 指令 - 設定 Google Maps 儲存清單
@@ -1302,6 +1391,11 @@ class PlaceBotHandlers:
                         "來源：僅本地分析（Gemini 影片理解未生效："
                         f"{escape_markdown(gemini_result.error_message or '未知原因')}）"
                     )
+
+            # 合併階段用了哪個/哪些後端（F27.2）——與失敗時的「備註」是分開的
+            # 一行，不混在一起：那行只在 found=False 的早期 return 才會出現。
+            if extraction_result.backend_note:
+                lines.append(escape_markdown(f"合併：{extraction_result.backend_note}"))
 
             if self.sheets_service.is_configured():
                 lines.append("📊 已同步到 Google Sheets")
