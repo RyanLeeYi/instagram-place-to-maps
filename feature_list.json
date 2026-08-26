@@ -30,6 +30,7 @@
         "app/services/place_extractor.py",
         "app/bot/handlers.py",
         "app/database/models.py",
+        "scripts/f22_regression.py",
         "tests/test_place_gating.py"
       ]
     }
