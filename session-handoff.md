@@ -1,79 +1,61 @@
 # Session Handoff
 
-最後更新：2026-08-25
-HEAD：`ebb8e6b`（已 push，工作區乾淨）
+最後更新：2026-08-26（額度觸頂收工）
+HEAD：`f76d0ad`（已 push，工作區乾淨）
 
 ## 現況
 
-`feature_list.json` 只剩 **F27 envelope**（failing，等下一個 slice 送審）。
-本 session 通過驗收並歸檔的：**F24、F18、F10、F13、F22、F25、F26、F27.1**（歸檔區 28 條）。
+- **F27.2 passing 並歸檔**（歸檔區 29 條）：24/24 驗收過。#18 log 可觀測性打回一次，修好後 targeted 重驗 pass。單一 commit `16921c3`。
+- **F28 實作完成但卡在降級路徑回歸，未驗收**（詳見下）。主檔剩 F27 envelope + F28。
+- 測試基準：**170 passed / 2 skipped**（F27.2 後 159 + F28 的 11 條）。
+- #11 已於 2026-08-26 經 Ryan 重新簽核：巫婆水餃的 is_physical 不做硬斷言（qwen3:8b 兩版 prompt 共 9 次推論全判 true，能力上限），改驗端到端守門（E 段或 A 段任一道擋住即 pass）；其餘五家仍必須 true。
 
-測試 **134 passed / 2 skipped**（2 條 skip 是需要網路的 Threads 轉址實機檢查，
-`RUN_NETWORK_TESTS=1` 才跑）。冒煙測試七段全過。
+## F28 唯一擋路的東西：降級路徑（無 agy 候選）schema 崩壞
 
-## 兩個回歸工具
+**症狀**：冒煙 extract 段 found=False。F28 前同材料 3/3 成功，F28 prompt 加長後 0/3。
+f22_regression 抓不到——它有 agy 候選段，該情境 schema 正常（兩案例各 3/3 全過）。
+
+**根因（已確認，別重查）**：qwen3:8b 在 F28 加長的 prompt + 無候選段時系統性拋棄指定
+schema——自創頂層鍵（「推荐店家」「景点/地点」city+additional_info）、沒有 found 鍵、簡體。
+
+**已試過的（全都別再試）**：純 prompt 工程五版全滅——v2 商品/地點重框、v3 標記非過濾、
+v4 精簡欄位+規則13 schema 錨定、v5 開頭格式強制、v6 few-shot 範例。原始輸出樣本在
+executor worktree 的 scratchpad（agent-ac5971665a79b6014）。
+
+**有效但還不夠的（已 commit `f76d0ad`）**：
+1. `ollama.chat(format="json")`（釘住的 0.3.3 簽章支援 Literal['','json']，不支援 schema dict）——堵住「整段自然語言不給 JSON」模式
+2. `_parse` 加 schema 漂移救援：頂層任何「含 name 的 dict 陣列」都當 places 收下
+兩者疊加後降級重現 **4/6**（HEAD 前是 0/3）。剩餘失敗是模型回 found=false 或無可救陣列。
+
+**下一步（照序）**：
+1. 未驗證的候選修法：**降級模式用短 prompt**——規則 11-13（district/is_physical 詳解）只在
+   有 agy 候選時附加，降級模式回到接近 F28 前的短 prompt（已知穩定 3/3）。理由：降級路徑
+   本來就「不要求精度」（_reconcile docstring），is_physical 缺省 True 是 fail-open，A 段兜底。
+   實作點：EXTRACTION_PROMPT 的欄位描述去掉「見規則 N」引用改自足短句，規則 11-13 抽成
+   常數在 extract() 依 gemini_places 有無條件附加。
+2. 驗證迴圈：降級重現 3/3（scratchpad `repro_main.py`，指主工作區）→ f22_regression 3
+   兩案例各 3/3（confirm 有候選路徑沒被改壞）→ pytest ≥170 → 冒煙七段
+3. 全綠後派 acceptance-verifier 驗 F28（注意披露：F28 已是**兩個 commit**（047f789+f76d0ad，
+   可能再加一個），#13 rollback 條款會吃 P3，F27.1 有前例）
+
+## 回歸工具
 
 ```
-scripts\f22_regression.py [次數]   # 預設 3；走快取材料，不呼叫 agy、不連網
-scripts\agy_reliability.py [次數]  # 需網路與真 agy，很慢；結果寫 docs\agy-reliability.md
+scripts\f22_regression.py [次數]   # 快取材料+本地 ollama，一輪 3 約 30-40 分鐘
+scripts\smoke_pipeline.py          # 全 pipeline 真跑約 3-4 分鐘，[4] extract 是本次回歸的哨兵
+scratchpad repro_main.py           # 降級路徑重現（gemini_places=None），一次 1-3 分鐘
 ```
-
-`f22_regression` 的兩個案例正確答案是 Ryan 2026-08-25 看過影片逐項確認的。
-
-## 等 Ryan 裁示（唯一擋住進度的東西）
-
-**一、Places 那一段（我建議 E → A → D）**
-
-冒煙測試顯示「巫婆水餃店 台北」被比對成「芳芳江蘇水餃」。查證後發現：
-
-- **巫婆水餃根本不在 Google Maps 上**——它是業配的冷凍水餃品牌，沒有實體店。
-  四種查法（含加行政區、加地點偏好）18 筆結果沒有一筆是它
-- **`needs_human_check` 只寫進回覆文字**，DB／Sheets／Maps 清單全部無條件寫入。
-  所以已知比對錯的店家還是會進使用者的地圖清單
-
-三段修法：
-
-- **E**：擷取階段分「實體店家 vs 品牌／商品」，只有實體店家送 Places。
-  判斷資訊都在手邊沒人用——說明文寫「冷凍水餃」「贊助」，agy 的理由是「開箱下鍋烹煮」
-  （在自己家），對比其他五家都是「入座用餐」「至攤位點餐」
-- **A**：信心度 LOW 時當作沒找到，不寫 Maps 清單。不對稱性支持這個做法——
-  錯的條目要手動刪，漏掉的隨時能自己加
-- **D**：送 Places 的關鍵字用說明文的行政區，不要讓 LLM 猜「台北」。
-  實測換成「北投」後候選從中正／中山／士林區變成北投區
-
-**注意**：加了 E 之後，F22 回歸案例的「必須留下六家」含巫婆水餃仍成立
-（擷取階段留下它是對的），但它會被標成非實體店家而不進 Maps。F28 的 acceptance
-要寫清楚這點，否則兩份規格會互相矛盾。
-
-**二、F27 envelope 的下一個 slice（F27.2）要不要動工**
-F27.1 已完成。F27.2 是兩種執行模式（備援鏈／投票）＋ 使用者切換。
 
 ## 給下一個 agent 的坑
 
-**agy 仍然不可靠，只是沒那麼糟。** 含重試 5/6（83%），對照上線前單次呼叫約 50%。
-案例 (b) 有一次三連敗；另一支 Threads 影片曾四連敗。**重試不是修好，是壓低頻率。**
+- worktree 派工：從 origin/main 開、沒有 .venv/.env/f22_fixtures。派工單要附主工作區直譯器
+  絕對路徑、`TELEGRAM_BOT_TOKEN=dummy-for-tests`、複製 fixtures、**`OLLAMA_MODEL=qwen3:8b`**
+  （worktree 沒 .env 時 Settings 預設 qwen2.5:7b，本機沒裝，會 model not found）
+- handlers.py／config.py／place_extractor.py 是 UTF-8 BOM + CRLF，用 Edit 工具改
+- `_is_area_name` 的後綴比對是繁體（市場），模型輸出簡體（市场）會漏過濾——降級救援
+  路徑實測出現過，暫不修（降級不要求精度），但別當成 bug 重複回報
+- F28 的 f22_regression 案例 (a) 已改：巫婆水餃 is_physical 不硬斷言、其餘五家必須 true
 
-**agy 對同一支影片會讀出不同的字**（「酒場清**治**郎」vs「清**志**郎」）。
-`f22_regression.py` 目前走快取材料所以不受影響；哪天改成真的呼叫 agy，案例 (b) 會隨機變紅。
+## 等 Ryan 的
 
-**讀影片這一格永遠只能用 agy CLI。** `antigravity-sdk-python` 只吃 `GEMINI_API_KEY`
-或 Vertex AI 的 ADC，**不沿用 CLI 的訂閱憑證**；Claude 與 Codex 的 CLI/SDK 都不吃 mp4。
-
-**Bash heredoc 會吃掉反斜線跳脫。** 本 session 踩三次：寫進 Python 字串的 `\n` 會變成
-真的換行。改檔用 Edit 工具，或先 Write 腳本再執行。
-`handlers.py`／`config.py`／`place_extractor.py` 是 UTF-8 with BOM + CRLF，逐行改要保留兩者。
-
-**一個 commit 只放一個 feature。** F26 與 F27.1 被我混在 `03b8b4c`，害 F27.1 的
-「rollback：單一 commit revert」直接做不到，驗收判 P3。手動回退清單記在 F27.1 的 evidence 裡。
-
-## 環境落差（worktree 派工必讀）
-
-worker 的 worktree 從 `origin/main` 開，而 `.venv`、`.env`、`temp_videos/f22_fixtures/`
-全在 `.gitignore` 內，不會跟過去。派工單要附：
-
-- 主工作區直譯器絕對路徑（worktree 裡沒有 `.venv`）
-- `export TELEGRAM_BOT_TOKEN=dummy-for-tests`（否則 `app.config` 在 collection 階段就炸）
-- 要跑 `f22_regression.py` 的話，叫 worker 從主工作區複製 `temp_videos/f22_fixtures/*.json`
-
-派工前用 `git rev-parse --short origin/main` 對一下自己的 HEAD——**commit 了但沒 push 的
-規格 worker 一樣看不到**。
+無（#11 已裁示）。F28 收尾照上面「下一步」走即可。
