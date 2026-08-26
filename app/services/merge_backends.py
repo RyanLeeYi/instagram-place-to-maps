@@ -162,6 +162,10 @@ class OllamaMergeBackend:
             lambda: ollama.chat(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
+                # format="json" 是 server 端的文法約束，堵住「整段回自然語言分析、
+                # 連 JSON 都不給」的失敗模式（F28 降級路徑，prompt 規則五版都壓不住）。
+                # 釘住的 0.3.3 簽章是 Literal['', 'json']，不支援 schema dict。
+                format="json",
                 options={"temperature": 0.3}
             )
         )
@@ -230,6 +234,26 @@ class OllamaMergeBackend:
                 else:
                     logger.error(f"JSON 解析失敗，無法修復: {first_error}")
                     raise MergeFailure(f"JSON 解析失敗: {first_error}")
+
+            # schema 漂移救援（F28）：format="json" 保證合法 JSON，但 8b 在降級
+            # 路徑（無 agy 候選）仍會自創頂層鍵（實測三種：「推荐店家」、
+            # 「景点/地点」、city+additional_info，且都沒有 found 鍵）。只要頂層
+            # 有「含 name 的 dict 陣列」就當 places 收下——名字是唯一不可替代的
+            # 欄位，其餘欄位缺了走 PlaceInfo 預設值（is_physical 預設 True 即
+            # fail-open，交給 A 段守門）。
+            if not data.get("places") and "place" not in data:
+                for value in data.values():
+                    if (
+                        isinstance(value, list)
+                        and value
+                        and all(isinstance(x, dict) for x in value)
+                        and any(x.get("name") for x in value)
+                    ):
+                        logger.warning(
+                            f"回應 schema 漂移，從自創鍵救回 {len(value)} 筆地點"
+                        )
+                        data = {"found": True, "places": value, "notes": data.get("notes")}
+                        break
 
             if not data.get("found", False):
                 # 模型自己說沒找到——它附的理由是有資訊的，要送到使用者眼前
