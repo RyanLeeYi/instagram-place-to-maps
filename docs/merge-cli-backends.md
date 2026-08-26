@@ -61,3 +61,32 @@ model metadata 找不到、skill 描述被截短這兩種警告都長這樣，�
 失敗、逾時、CLI 不存在三種情況的判斷邏輯（外層先驗、逾時 kill、找不到
 執行檔轉 MergeFailure）不受此限制影響，三家共用同一段 `_run_cli_subprocess`，
 且已用假 subprocess 覆蓋測試。
+
+## 真 CLI 實跑證據（2026-08-26，驗收 #4 / #8）
+
+同一份冒煙 prompt（要求模型原樣回覆
+`{"found": true, "places": [{"name": "F27.3 CLI 冒煙測試店", "city": "台北"}]}`）
+走實際 `get_backend(name).merge(prompt)`，三家輸出原文：
+
+```
+--- smoke backend=agy prompt_bytes=179
+OK: ['F27.3 CLI 冒煙測試店']
+--- smoke backend=claude prompt_bytes=179
+OK: ['F27.3 CLI 冒煙測試店']
+--- smoke backend=codex prompt_bytes=179
+MergeFailure: codex：turn.failed：{"type":"error","status":400,"error":
+{"type":"invalid_request_error","message":"The 'gpt-5.6-sol' model is not
+supported when using Codex with a ChatGPT account."}}
+```
+
+codex 的失敗即上節記載的帳號限制，如實轉成 `MergeFailure`、鏈上照常降級。
+
+8KB prompt 傳遞測試（含填充逐字稿，實測 11,677 bytes，經
+`create_subprocess_exec` argv 傳遞、不經 shell）：
+
+```
+--- 8KB backend=agy prompt_bytes=11677
+OK: ['測試地點8KB']
+--- 8KB backend=claude prompt_bytes=11677
+OK: ['測試地點8KB']
+```
