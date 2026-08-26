@@ -95,14 +95,14 @@ class PlaceExtractor:
       "city": "城市（繁體中文，如：台北、東京、首爾）",
       "country": "國家（繁體中文，如：台灣、日本、韓國）",
       "address": "地址（繁體中文，如有提到）",
-      "district": "行政區（如：北投；見規則 11，沒有就 null）",
+      "district": "行政區（說明文或 hashtag 明確提到才填，如：北投；否則 null）",
       "place_type": ["地點類型（繁體中文），如：餐廳、咖啡廳、景點、博物館、公園"],
       "highlights": ["亮點（繁體中文）：推薦餐點、必看特色等"],
       "price_range": "$或$$或$$$或$$$$（如適用）",
       "recommendation": "推薦原因（繁體中文，簡短描述）",
       "tags": ["標籤（繁體中文），如：約會、打卡、親子、拍照"],
       "confidence": "high或medium或low",
-      "is_physical": "true或false（見規則 12）",
+      "is_physical": "true或false（可實際到訪的實體店家為 true；判斷不了就填 true）",
       "search_keywords": ["用於 Google Maps 搜尋的關鍵字，包含地點名稱和城市"]
     }}
   ],
@@ -136,7 +136,15 @@ class PlaceExtractor:
    招牌全名（例如「美軍炸雞」與「Padam Padam 1970」與「Padam Padam 1970 美軍炸雞」）
    **只能出現一筆**：挑最完整的當 name，其餘寫進 name_en 或 search_keywords。
    兩個名字指同一家店卻各列一筆，會在 Google Maps 清單裡存成兩個地點。
-11. district（行政區）只填說明文或 hashtag 裡明確出現的行政區名稱（如：北投、信義、
+{extra_rules}"""
+
+    # 規則 11-13 只在「有 Gemini 候選」時附加。無候選的降級路徑餵給 qwen3:8b 時，
+    # prompt 一長它就整組拋棄指定 schema（自創頂層鍵、丟掉 found、簡體），F28 加這
+    # 三條之後降級重現 0/3。純 prompt 工程五版都救不回來（v2-v6，見 DEVLOG 2026-08-26），
+    # 所以改用「降級模式回到 F28 前的短 prompt」。安全性：降級路徑本來就不要求精度
+    # （_reconcile docstring），is_physical 缺省 True 是 fail-open，非實體店家由後面
+    # 的 A 段（LOW confidence 不寫 Maps）與比對步驟兜底。
+    CANDIDATE_RULES = """11. district（行政區）只填說明文或 hashtag 裡明確出現的行政區名稱（如：北投、信義、
    大安），不得從地址、店名或畫面去推測、猜測。沒有明確提到就填 null。
 12. is_physical（是否為可實際到訪的實體店家）——這是**標記，不是要不要列入的條件**：
    判成 false 的店家**仍然必須列在 places 裡**、found 也照常是 true，只是
@@ -215,6 +223,7 @@ class PlaceExtractor:
             visual_description=visual_description or "（無畫面描述）",
             ig_account=ig_account or "（未知）",
             gemini_candidates=self.format_gemini_candidates(gemini_places),
+            extra_rules=self.CANDIDATE_RULES if gemini_places else "",
         )
         
         notes = None
