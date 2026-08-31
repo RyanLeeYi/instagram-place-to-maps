@@ -346,3 +346,34 @@ def test_偽造名稱callback不改鏈且回錯誤(tmp_path, monkeypatch):
     assert runtime_settings.merge_backends == "ollama"
     text, _ = query.edits[-1]
     assert "無效" in text
+
+
+# 回歸：runtime_settings.json 已有覆寫鏈時，PlaceExtractor 建構就用覆寫鏈，
+# 第一次 extract() 不得重建（否則測試注入的假後端會被真後端蓋掉去打 CLI；
+# 2026-08-31 點了 agy 按鈕之後整套測試卡 14 秒/條、7 條紅就是這個）。
+
+
+def test_建構時已有runtime覆寫鏈則首次extract不重建(tmp_path, monkeypatch):
+    _reset_runtime_settings(tmp_path, monkeypatch)
+    monkeypatch.setattr(runtime_settings, "_merge_backends", "agy,ollama")
+
+    import app.services.place_extractor as pe
+
+    build_calls = []
+    real = pe.get_backend_chain
+
+    def counting(chain):
+        build_calls.append(chain)
+        return [FakeMergeBackend([PlaceInfo(name="假鏈")], name=chain)]
+
+    monkeypatch.setattr(pe, "get_backend_chain", counting)
+    extractor = PlaceExtractor()
+    assert build_calls[-1] == "agy,ollama", "建構應直接用 runtime 覆寫鏈"
+
+    injected = FakeMergeBackend([PlaceInfo(name="注入")], name="ollama")
+    extractor._backends = [injected]
+    n = len(build_calls)
+    asyncio.run(extractor.extract(transcript="", visual_description="", caption=""))
+    assert len(build_calls) == n, "鏈沒變，第一次 extract() 不該重建"
+    assert injected.calls, "注入的後端必須真的被呼叫"
+    monkeypatch.setattr(pe, "get_backend_chain", real)

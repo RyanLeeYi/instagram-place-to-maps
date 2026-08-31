@@ -177,7 +177,12 @@ class PlaceExtractor:
         # 不在這裡快取，改成每次 extract() 都讀 runtime_settings.merge_backends
         # （見下）。self._backends_chain 記住上次建鏈用的字串，字串沒變就沿用
         # 現有的後端實例，不必每則訊息都重建 CLI／SDK 後端物件。
-        self._backends_chain = settings.merge_backends
+        # 先驗 env 預設值（不合法就在這裡炸，F27.2 #2），再用 runtime_settings
+        # 當下生效的鏈建實例——runtime_settings.json 有覆寫時啟動就照覆寫，
+        # 不等第一則訊息才重建（否則注入 self._backends 的測試會被第一次
+        # extract() 的重建蓋掉、跑去打真後端）。
+        get_backend_chain(settings.merge_backends)
+        self._backends_chain = runtime_settings.merge_backends
         self._backends = get_backend_chain(self._backends_chain)
         if settings.merge_mode not in runtime_settings.MERGE_MODE_OPTIONS:
             raise UnsupportedMergeModeError(
