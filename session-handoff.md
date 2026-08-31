@@ -7,6 +7,8 @@
 ## 現況
 
 - **2026-08-31 插隊收官 F29**（Telegram `/mergebackends` 運行中切換合併後端鏈，持久化到 runtime_settings.json）：一輪驗收 10/10 過、已歸檔。測試基準升為 **221 passed / 2 skipped**。合法名稱單一來源是 `merge_backends.py:SUPPORTED_MERGE_BACKENDS`。F27.2「鏈只讀 env」的決定已被推翻，`PlaceExtractor.extract()` 每次讀鏈、字串沒變不重建。**服務需經 mission-control 重啟才載入**；重啟前先殺殘留的舊 uvicorn（08-31 09:43 撞埠 10048 三次）。同日 `/start`／`/help` 補列 `/mergemode`。
+- **同日 F30 passing 歸檔**：`/mergebackends` 無參數回覆帶六顆按鈕（每列 3），一鍵設「該後端,ollama」，走同一個 `set_merge_backends`；驗收 6/6，測試基準 **227 passed / 2 skipped**。
+- **新開 F31（未簽核）**：frames／mergemode／mergebackends 三個 callback 連點同一顆按鈕時 `edit_message_text` 內容不變，Telegram 拋 `BadRequest: Message is not modified`，沒被接住（bot 不崩、按鈕看似沒反應）。F27.2 舊模式，三個一起修。
 - F27.4 狀態不變（下文 08-28 內容仍有效）。
 
 - 歸檔區 31 條。主檔 failing 兩條：**F27 envelope** 與 **F27.4**。
