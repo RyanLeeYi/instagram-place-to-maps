@@ -1130,7 +1130,7 @@ class PlaceBotHandlers:
                     post_result = threads_result
                     
                     await safe_edit_message(status_message, "🔍 正在分析圖片...")
-                    images_to_analyze = threads_result.image_paths[:5]
+                    images_to_analyze = threads_result.image_paths
                     images_result = await self.visual_analyzer.analyze_images(images_to_analyze)
                     
                     visual_description = images_result.overall_visual_summary if images_result.success else ""
@@ -1157,7 +1157,7 @@ class PlaceBotHandlers:
                     
                     # 圖片分析
                     if threads_result.image_paths:
-                        images_to_analyze = threads_result.image_paths[:5]
+                        images_to_analyze = threads_result.image_paths
                         analysis_tasks.append(
                             asyncio.create_task(
                                 self.visual_analyzer.analyze_images(images_to_analyze)
@@ -1228,7 +1228,7 @@ class PlaceBotHandlers:
                     
                     # 並行分析圖片（使用 analyze_images 方法）
                     await safe_edit_message(status_message, "🔍 正在分析圖片...")
-                    images_to_analyze = post_result.image_paths[:5]  # 最多分析 5 張
+                    images_to_analyze = post_result.image_paths
                     images_result = await self.visual_analyzer.analyze_images(images_to_analyze)
                     
                     visual_description = images_result.overall_visual_summary if images_result.success else ""
@@ -1272,7 +1272,7 @@ class PlaceBotHandlers:
                         
                         # 並行分析圖片（使用 analyze_images 方法）
                         await safe_edit_message(status_message, "🔍 正在分析圖片...")
-                        images_to_analyze = post_result.image_paths[:5]
+                        images_to_analyze = post_result.image_paths
                         images_result = await self.visual_analyzer.analyze_images(images_to_analyze)
                         
                         visual_description = images_result.overall_visual_summary if images_result.success else ""
