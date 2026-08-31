@@ -296,6 +296,7 @@ class PlaceBotHandlers:
 /start - 顯示說明
 /list - 查看已儲存的地點
 /frames - 切換分析幀數模式
+/mergemode - 切換合併模式（failover / vote）
 /savelist - 切換 Google Maps 儲存清單
 /setup\_google - 設定 Google Maps 自動儲存
 /logout\_google - 清除 Google 登入狀態
@@ -743,6 +744,7 @@ class PlaceBotHandlers:
 
 *設定指令：*
 • `/frames` - 設定影片分析幀數
+• `/mergemode` - 設定合併模式（failover / vote）
 • `/savelist` - 設定 Google Maps 儲存清單
 
 *注意事項：*
