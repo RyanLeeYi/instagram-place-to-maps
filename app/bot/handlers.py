@@ -607,12 +607,17 @@ class PlaceBotHandlers:
         keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
+        names = [n.strip() for n in chain.split(",") if n.strip()]
+        roles = ["主力"] + ["備援"] * max(0, len(names) - 2) + (["保底"] if len(names) > 1 else [])
+        chain_lines = "\n".join(
+            f"  {i}. {name}（{role}）" for i, (name, role) in enumerate(zip(names, roles), 1)
+        )
         message = (
-            f"目前後端鏈：{chain}\n"
-            f"目前模式：{mode}\n"
+            f"目前後端鏈：{chain}\n{chain_lines}\n"
+            f"目前模式：{mode}\n\n"
             f"合法後端名稱：{'、'.join(supported)}\n\n"
-            "點下方按鈕＝把鏈設成「該後端,ollama」（ollama 本身設成單一 ollama）；"
-            "自訂順序或串三家以上仍用文字參數 /mergebackends <a,b,c>"
+            "按鈕＝設成「該後端＋ollama 保底」（ollama 本身就單一 ollama）；"
+            "自訂順序或串三家以上用 /mergebackends <a,b,c>"
         )
         return message, reply_markup
 
