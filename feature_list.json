@@ -41,8 +41,8 @@
       "name": "inline keyboard 連點同一顆按鈕時 edit_message_text 拋 Message is not modified",
       "acceptance": "frames／mergemode／mergebackends 三個 callback handler 在新舊訊息內容與 reply_markup 完全相同時，不得讓 telegram.error.BadRequest（Message is not modified）冒到全域 error_handler：要嘛組訊息前比對新舊內容相同就只 query.answer() 不呼叫 edit_message_text，要嘛集中一個 helper 包 edit_message_text 並只吞「not modified」這一種 BadRequest（其他 BadRequest 照樣拋）。三個 handler 走同一個 helper，不各寫一份。單元測試：對每個 handler 模擬連點同一顆按鈕，假 edit_message_text 在內容相同時拋 BadRequest('Message is not modified')，斷言 handler 不拋例外且 runtime_settings 狀態不變；另一條測試確認其他 BadRequest 仍會拋出。pytest 總數不低於 227 passed / 2 skipped。",
       "status": "failing",
-      "signed_off": false,
-      "evidence": "2026-08-31 F30 acceptance-verifier 觀察，Confidence high（Telegram Bot API 文件化行為）。既有 F27.2 的 mergemode_callback_handler 與 frames_callback_handler 同樣沒處理，F30 沿用同模式，非本次回歸。",
+      "signed_off": true,
+      "evidence": "2026-08-31 F30 acceptance-verifier 觀察，Confidence high（Telegram Bot API 文件化行為）。既有 F27.2 的 mergemode_callback_handler 與 frames_callback_handler 同樣沒處理，F30 沿用同模式，非本次回歸。 2026-08-31 Ryan 於 agent-brief 回覆「Sign off as-is」（卡 45f9821e），acceptance 依原草案凍結。",
       "rationale": "使用者看到的症狀是「按鈕沒反應」但沒有錯誤提示；bot 不會崩（全域 error_handler 只 log）。低風險但體驗差，三個 handler 一起修才不會漏。",
       "prerequisites": [
         "F30"

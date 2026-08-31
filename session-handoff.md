@@ -9,6 +9,11 @@
 - **2026-08-31 插隊收官 F29**（Telegram `/mergebackends` 運行中切換合併後端鏈，持久化到 runtime_settings.json）：一輪驗收 10/10 過、已歸檔。測試基準升為 **221 passed / 2 skipped**。合法名稱單一來源是 `merge_backends.py:SUPPORTED_MERGE_BACKENDS`。F27.2「鏈只讀 env」的決定已被推翻，`PlaceExtractor.extract()` 每次讀鏈、字串沒變不重建。**服務需經 mission-control 重啟才載入**；重啟前先殺殘留的舊 uvicorn（08-31 09:43 撞埠 10048 三次）。同日 `/start`／`/help` 補列 `/mergemode`。
 - **同日 F30 passing 歸檔**：`/mergebackends` 無參數回覆帶六顆按鈕（每列 3），一鍵設「該後端,ollama」，走同一個 `set_merge_backends`；驗收 6/6，測試基準 **227 passed / 2 skipped**。
 - **新開 F31（未簽核）**：frames／mergemode／mergebackends 三個 callback 連點同一顆按鈕時 `edit_message_text` 內容不變，Telegram 拋 `BadRequest: Message is not modified`，沒被接住（bot 不崩、按鈕看似沒反應）。F27.2 舊模式，三個一起修。
+- **同日下午（互動 session）**：F29 修一個真 bug——`PlaceExtractor.__init__` 原本用 env 鏈建、第一則訊息才換 runtime 鏈，導致 runtime_settings.json 有覆寫時，測試注入的假後端被第一次 `extract()` 重建蓋掉去打真 agy（整套 pytest 3 秒→104 秒、7 條紅）。改成建構時驗 env、直接用 runtime 鏈建，加回歸測試（`6af0a7b`）。**fast 檔位直接改**：拿掉 handlers 四處寫死的 `image_paths[:5]`（`3ebccdd`），實測 `Dcn_rfMj_Oy`（12 張輪播）從 4 家變 10 家、採用後端 agy。測試基準 **228 passed / 2 skipped**。
+- **brief-me 答案已消化**：F31 簽核（Sign off as-is）；**F27.4 的 force-push 壓成單一 commit 已獲授權（卡 80fc8550）**，尚未執行——下一場開工先做：只壓 F27.4 的 `7f1d80c`＋`0620554` 兩個 commit（之後 F29/F30 等 commit 疊在上面，rebase 時小心），重驗 acceptance #9 後改 passing。
+- **待開條目 F32 構想**：圖片貼文的視覺來源改走 agy——ffmpeg 把輪播拼成每張 2 秒的 mp4，走現有 `gemini_video.extract()`（同一個 `agy_input.mp4` 權限、同一套 status 檢查與 `GeminiPlace` 候選進 `_reconcile`），agy 失敗退回現在的 Ollama vision。acceptance 帶消融：`Dcn_rfMj_Oy`（現況 10 家）＋一則多圖貼文新舊各 3 次比店數與正確率。理由：8/25 消融證明「Ollama 描述畫面→LLM」在影片上是負貢獻；agy 權限只認固定完整路徑、逐張餵 N 張＝N 次 tool call（8–67 秒／次）。
+- `runtime_settings.json` 是 git 追蹤檔，按鈕切換就會讓工作樹髒；建議 `git rm --cached`＋gitignore，但 fresh clone 會少 `google_maps_list` 預設，Ryan 決定。
+- 殘留目錄 `.claude/worktrees/agent-a3301d24e20fdb248/`（worktree 已 prune，OneDrive 鎖住刪不掉）可手動刪。
 - F27.4 狀態不變（下文 08-28 內容仍有效）。
 
 - 歸檔區 31 條。主檔 failing 兩條：**F27 envelope** 與 **F27.4**。
