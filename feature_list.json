@@ -35,25 +35,6 @@
         ".env.example",
         "requirements.txt"
       ]
-    },
-    {
-      "id": "F29",
-      "name": "Telegram 指令運行中切換合併後端鏈（/mergebackends）",
-      "acceptance": "新增 Telegram 指令 /mergebackends，讓授權使用者不重啟服務即可改變合併階段的後端鏈（推翻 F27.2 的「鏈的內容只讀 env、要換鏈就重啟」決定；F27.2 的驗證規則本身不變）。(1) 無參數：回覆目前生效的後端鏈（依序列出）、目前合併模式（runtime_settings.merge_mode）、以及全部合法後端名稱（ollama / agy / claude / codex / claude-api / codex-api，來源是 get_backend 認得的名稱，不得另抄一份清單）。(2) /mergebackends <名稱,名稱,...>（逗號分隔，空白可有可無）：以 get_backend_chain 驗證，通過即成為新鏈，之後每一次 extract() 都用新鏈；回覆列出實際生效的鏈與目前模式。(3) 鏈為空或含不認得的名稱：回覆錯誤（含合法名稱清單），現行鏈不變、不落盤。(4) 新鏈比照 /frames、/savelist、/mergemode 的慣例持久化到 runtime_settings.json，重啟後沿用；runtime_settings.json 內的鏈若不合法，啟動時記 warning 並退回 env 的 MERGE_BACKENDS，服務照常啟動。(5) MERGE_BACKENDS 仍是零覆寫時的預設，且 PlaceExtractor 建構時對 env 預設值的驗證（F27.2 #2、#3）保留：env 鏈不合法照樣啟動失敗。(6) PlaceExtractor 改成每次 extract() 讀 runtime_settings 的鏈，不在建構時快取；後端實例的建立時機由實作決定，但同一條鏈不得每則訊息都重建 CLI／SDK 後端物件超過一次（切換後首次使用重建一次即可）。(7) 未授權 chat 呼叫一律拒絕，走 _is_authorized 同一套。(8) /start 與 /help 的指令表加入 /mergebackends。(9) 單元測試不打真後端：無參數查詢、合法切換後 extract() 拿到的鏈改變、非法名稱不改現況、runtime_settings.json 含非法鏈時退回 env、未授權拒絕；F22 兩個回歸案例各 3/3 維持；pytest 總數不低於動工前基準。(10) 不做各後端的可用性探測與缺金鑰預檢——缺金鑰或不可用的後端在鏈中由 F27 既有的降級規則處理，本條不新增探測。",
-      "status": "failing",
-      "signed_off": true,
-      "evidence": "2026-08-31 Ryan 提出：F27.2 只做了模式切換（/mergemode），後端鏈仍只能改 .env 的 MERGE_BACKENDS 後重啟；要能從 Telegram 直接換鏈。 2026-08-31 Ryan 簽核（/aad F29），acceptance 凍結。",
-      "rationale": "手機上換鏈的需求真實（Copilot／Claude 額度、agy 狀態天天變），重啟成本是走 mission-control。取捨：持久化跟隨本 repo runtime_settings 慣例而非 reels-summarizer F26 的「只存記憶體」，因為這裡三個既有指令都落盤，使用者心智模型一致。不做可用性探測是刻意的：後端沒有探測介面，failover 本身就是探測。與 F27.4 共用 app/config.py，不可平行實作。",
-      "prerequisites": [
-        "F27.2"
-      ],
-      "touches": [
-        "app/config.py",
-        "app/bot/handlers.py",
-        "app/main.py",
-        "app/services/place_extractor.py",
-        "tests/test_mergebackends_command.py"
-      ]
     }
   ]
 }

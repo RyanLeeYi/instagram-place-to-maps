@@ -1,10 +1,13 @@
 # Session Handoff
 
-最後更新：2026-08-28
+最後更新：2026-08-31
 狀態：**F27.4 依裁示縮成兩家、驗收 8 pass / 1 fail（已修）/ 1 unverified / 1 untestable，仍是 failing**。
 唯一擋著收官的是 acceptance #9「rollback 單一 commit」，那要 Ryan 給 force-push 授權才動得了，已投 brief-me。
 
 ## 現況
+
+- **2026-08-31 插隊收官 F29**（Telegram `/mergebackends` 運行中切換合併後端鏈，持久化到 runtime_settings.json）：一輪驗收 10/10 過、已歸檔。測試基準升為 **221 passed / 2 skipped**。合法名稱單一來源是 `merge_backends.py:SUPPORTED_MERGE_BACKENDS`。F27.2「鏈只讀 env」的決定已被推翻，`PlaceExtractor.extract()` 每次讀鏈、字串沒變不重建。**服務需經 mission-control 重啟才載入**；重啟前先殺殘留的舊 uvicorn（08-31 09:43 撞埠 10048 三次）。同日 `/start`／`/help` 補列 `/mergemode`。
+- F27.4 狀態不變（下文 08-28 內容仍有效）。
 
 - 歸檔區 31 條。主檔 failing 兩條：**F27 envelope** 與 **F27.4**。
 - 測試基準：**212 passed / 2 skipped**（F27.4 動工前 188/2；上一輪三家版是 220/2，
