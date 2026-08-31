@@ -117,6 +117,12 @@ class MergeBackend(Protocol):
         ...
 
 
+# get_backend() 認得的全部名稱（F29：/mergebackends 顯示合法清單用的單一來源）。
+SUPPORTED_MERGE_BACKENDS: Tuple[str, ...] = (
+    "ollama", "agy", "claude", "codex", "claude-api", "codex-api",
+)
+
+
 class UnsupportedMergeBackendError(ValueError):
     """settings.merge_backends 鏈裡有不支援的名稱，或鏈本身是空的。"""
 
@@ -159,8 +165,8 @@ def get_backend(name: str) -> MergeBackend:
             "codex-api": CodexApiMergeBackend,
         }[name]()
     raise UnsupportedMergeBackendError(
-        f"不支援的合併後端 {name!r}；目前支援 'ollama'、'agy'、'claude'、'codex'、"
-        f"'claude-api'、'codex-api'"
+        f"不支援的合併後端 {name!r}；目前支援 "
+        + "、".join(repr(n) for n in SUPPORTED_MERGE_BACKENDS)
     )
 
 

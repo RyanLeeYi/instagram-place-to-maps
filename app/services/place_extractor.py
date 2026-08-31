@@ -6,22 +6,13 @@ from typing import Optional, List
 
 from app.config import runtime_settings, settings
 from app.services.merge_backends import (
+    SUPPORTED_MERGE_BACKENDS,
     MergeFailure,
-    OllamaMergeBackend,
     PlaceInfo,
     UnsupportedMergeModeError,
     get_backend_chain,
     merge_with_backends,
     norm_place_name,
-)
-from app.services.merge_cli_backends import (
-    AgyMergeBackend,
-    ClaudeMergeBackend,
-    CodexMergeBackend,
-)
-from app.services.merge_sdk_backends import (
-    ClaudeApiMergeBackend,
-    CodexApiMergeBackend,
 )
 
 # PlaceInfo 定義搬到 merge_backends.py（F27.1：後端要用它組裝回傳值），
@@ -32,23 +23,9 @@ from app.services.merge_sdk_backends import (
 logger = logging.getLogger(__name__)
 
 
-# get_backend() 實際 dispatch 到的類別（F29）。merge_backends.py 不在這個
-# feature 的可寫範圍，無法在那邊加共用常數（例如 SUPPORTED_MERGE_BACKENDS），
-# 所以改成從這些類別各自宣告的 `name` 屬性取得合法名稱清單——不是另外手抄
-# 一份字串清單，改名或增減後端只要這裡的 import 跟著改，字串本身不會漂移。
-_MERGE_BACKEND_CLASSES = (
-    OllamaMergeBackend,
-    AgyMergeBackend,
-    ClaudeMergeBackend,
-    CodexMergeBackend,
-    ClaudeApiMergeBackend,
-    CodexApiMergeBackend,
-)
-
-
 def supported_merge_backend_names() -> List[str]:
     """get_backend() 認得的全部合法後端名稱（/mergebackends 顯示用，acceptance #1）。"""
-    return [cls.name for cls in _MERGE_BACKEND_CLASSES]
+    return list(SUPPORTED_MERGE_BACKENDS)
 
 
 @dataclass
