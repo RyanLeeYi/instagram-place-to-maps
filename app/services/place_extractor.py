@@ -7,11 +7,21 @@ from typing import Optional, List
 from app.config import runtime_settings, settings
 from app.services.merge_backends import (
     MergeFailure,
+    OllamaMergeBackend,
     PlaceInfo,
     UnsupportedMergeModeError,
     get_backend_chain,
     merge_with_backends,
     norm_place_name,
+)
+from app.services.merge_cli_backends import (
+    AgyMergeBackend,
+    ClaudeMergeBackend,
+    CodexMergeBackend,
+)
+from app.services.merge_sdk_backends import (
+    ClaudeApiMergeBackend,
+    CodexApiMergeBackend,
 )
 
 # PlaceInfo 定義搬到 merge_backends.py（F27.1：後端要用它組裝回傳值），
@@ -20,6 +30,25 @@ from app.services.merge_backends import (
 
 
 logger = logging.getLogger(__name__)
+
+
+# get_backend() 實際 dispatch 到的類別（F29）。merge_backends.py 不在這個
+# feature 的可寫範圍，無法在那邊加共用常數（例如 SUPPORTED_MERGE_BACKENDS），
+# 所以改成從這些類別各自宣告的 `name` 屬性取得合法名稱清單——不是另外手抄
+# 一份字串清單，改名或增減後端只要這裡的 import 跟著改，字串本身不會漂移。
+_MERGE_BACKEND_CLASSES = (
+    OllamaMergeBackend,
+    AgyMergeBackend,
+    ClaudeMergeBackend,
+    CodexMergeBackend,
+    ClaudeApiMergeBackend,
+    CodexApiMergeBackend,
+)
+
+
+def supported_merge_backend_names() -> List[str]:
+    """get_backend() 認得的全部合法後端名稱（/mergebackends 顯示用，acceptance #1）。"""
+    return [cls.name for cls in _MERGE_BACKEND_CLASSES]
 
 
 @dataclass
@@ -162,15 +191,17 @@ class PlaceExtractor:
     def __init__(self):
         # 依 settings.merge_backends 建後端鏈；鏈為空或含不支援的名稱、以及
         # MERGE_MODE 不合法，都在這裡（建構時）就報錯，不等到真的呼叫才發現
-        # （F27.2 acceptance #2、#3：不得靜默 fallback）。
+        # （F27.2 acceptance #2、#3：不得靜默 fallback。這條驗證規則本身在
+        # F29 保留不變，驗的是 env 預設值，不是 runtime_settings 當下的覆寫值）。
         #
         # self（這個物件本身）是長生命週期的——handlers.py 只在啟動時建構一次、
-        # 活到 bot 結束，所以鏈的內容只讀 env 這件事沒問題（要換鏈本來就該
-        # 重啟），但合併「模式」不能比照辦理：/mergemode 要能在運行中切換，
-        # 因此模式不在這裡快取，改成每次 extract() 都讀
-        # runtime_settings.merge_mode（見下）。這裡驗證的是 MERGE_MODE 的
-        # env 預設值本身合不合法，不是 runtime_settings 當下的覆寫值。
-        self._backends = get_backend_chain(settings.merge_backends)
+        # 活到 bot 結束。F27.2 時鏈的內容只讀 env（要換鏈本來就該重啟）；
+        # F29 起 /mergebackends 要能在運行中切換鏈，因此鏈也比照合併模式，
+        # 不在這裡快取，改成每次 extract() 都讀 runtime_settings.merge_backends
+        # （見下）。self._backends_chain 記住上次建鏈用的字串，字串沒變就沿用
+        # 現有的後端實例，不必每則訊息都重建 CLI／SDK 後端物件。
+        self._backends_chain = settings.merge_backends
+        self._backends = get_backend_chain(self._backends_chain)
         if settings.merge_mode not in runtime_settings.MERGE_MODE_OPTIONS:
             raise UnsupportedMergeModeError(
                 f"不支援的合併模式 MERGE_MODE={settings.merge_mode!r}；"
@@ -229,9 +260,15 @@ class PlaceExtractor:
         notes = None
         backend_note = None
         try:
-            # 依 runtime_settings.merge_mode 跑後端鏈，再用確定性規則收斂
-            # （模型的判斷不是最終權威）。每次都重讀 merge_mode、不快取，
-            # /mergemode 才能在運行中切換而不必重啟（見 __init__ 的說明）。
+            # 依 runtime_settings.merge_backends 跑後端鏈，鏈字串沒變就沿用
+            # 現有實例，變了才重建（/mergebackends 切換後首次使用重建一次，
+            # 見 __init__ 的說明）。合併模式同理讀 runtime_settings.merge_mode，
+            # 兩者都不在建構時快取，才能在運行中切換而不必重啟。
+            chain = runtime_settings.merge_backends
+            if chain != self._backends_chain:
+                self._backends = get_backend_chain(chain)
+                self._backends_chain = chain
+
             places, backend_note = await merge_with_backends(
                 self._backends, prompt, runtime_settings.merge_mode
             )

@@ -297,6 +297,7 @@ class PlaceBotHandlers:
 /list - 查看已儲存的地點
 /frames - 切換分析幀數模式
 /mergemode - 切換合併模式（failover / vote）
+/mergebackends - 切換合併後端鏈
 /savelist - 切換 Google Maps 儲存清單
 /setup\_google - 設定 Google Maps 自動儲存
 /logout\_google - 清除 Google 登入狀態
@@ -541,6 +542,51 @@ class PlaceBotHandlers:
         else:
             await query.edit_message_text("切換失敗")
 
+    async def mergebackends_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        處理 /mergebackends 指令 - 切換合併階段的後端鏈（F29）
+
+        推翻 F27.2「鏈的內容只讀 env、要換鏈就重啟」的決定，讓授權使用者
+        不重啟服務即可改變後端鏈；F27.2 的驗證規則（get_backend_chain）本身
+        不變。
+
+        用法：
+            /mergebackends - 顯示目前生效的後端鏈、合併模式、全部合法名稱
+            /mergebackends <名稱,名稱,...> - 切換後端鏈（逗號分隔，空白可有可無）
+        """
+        from app.config import runtime_settings
+        from app.services.place_extractor import supported_merge_backend_names
+
+        chat_id = update.effective_chat.id
+
+        if not self._is_authorized(chat_id):
+            await update.message.reply_text("未授權的使用者")
+            return
+
+        supported = supported_merge_backend_names()
+        args = context.args
+
+        if not args:
+            message = (
+                f"目前後端鏈：{runtime_settings.merge_backends}\n"
+                f"目前模式：{runtime_settings.merge_mode}\n"
+                f"合法後端名稱：{'、'.join(supported)}"
+            )
+            await update.message.reply_text(message)
+            return
+
+        raw_chain = " ".join(args)
+
+        if runtime_settings.set_merge_backends(raw_chain):
+            await update.message.reply_text(
+                f"已切換後端鏈：{runtime_settings.merge_backends}\n"
+                f"目前模式：{runtime_settings.merge_mode}"
+            )
+        else:
+            await update.message.reply_text(
+                "無效的後端鏈\n\n合法後端名稱：" + "、".join(supported)
+            )
+
     async def savelist_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         處理 /savelist 指令 - 設定 Google Maps 儲存清單
@@ -745,6 +791,7 @@ class PlaceBotHandlers:
 *設定指令：*
 • `/frames` - 設定影片分析幀數
 • `/mergemode` - 設定合併模式（failover / vote）
+• `/mergebackends` - 設定合併後端鏈
 • `/savelist` - 設定 Google Maps 儲存清單
 
 *注意事項：*

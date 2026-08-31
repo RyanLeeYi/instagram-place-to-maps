@@ -58,12 +58,13 @@ class Settings(BaseSettings):
     # 重試不得讓總時長無上限。0 表示用 gemini_video_timeout * agy_max_attempts 推算。
     agy_total_timeout: int = Field(default=0, env="AGY_TOTAL_TIMEOUT")
 
-    # 合併階段的後端鏈與執行模式（F27.2）。MERGE_BACKENDS 是逗號分隔的後端
-    # 名稱鏈，目前唯一合法名稱是 ollama；鏈為空或含不認得的名稱、
-    # MERGE_MODE 不是 failover/vote，都在 PlaceExtractor 建構時明確報錯，
-    # 不得靜默 fallback。鏈的內容只讀 env，不可運行時改；MERGE_MODE 的
-    # env 預設值可在運行中被 /mergemode 透過 runtime_settings 覆寫（見
-    # RuntimeSettings.merge_mode）。
+    # 合併階段的後端鏈與執行模式。MERGE_BACKENDS 是逗號分隔的後端名稱鏈；
+    # 鏈為空或含不認得的名稱、MERGE_MODE 不是 failover/vote，都在
+    # PlaceExtractor 建構時明確報錯，不得靜默 fallback（這是對 env 預設值
+    # 的驗證，永遠保留）。這兩個 env 預設值都可在運行中被 /mergemode、
+    # /mergebackends 透過 runtime_settings 覆寫，不必重啟（F29 推翻了
+    # F27.2「鏈的內容只讀 env、要換鏈就重啟」的決定，見
+    # RuntimeSettings.merge_backends／merge_mode）。
     merge_backends: str = Field(default="ollama", env="MERGE_BACKENDS")
     merge_mode: str = Field(default="failover", env="MERGE_MODE")
 
@@ -184,6 +185,7 @@ class RuntimeSettings:
         self._google_maps_list: str = None
         self._use_auto_mode: bool = False
         self._merge_mode: str = None  # None 表示未覆寫，讀 settings.merge_mode
+        self._merge_backends: str = None  # None 表示未覆寫，讀 settings.merge_backends
 
         # 設定檔路徑
         self._settings_file = Path("./runtime_settings.json")
@@ -214,6 +216,27 @@ class RuntimeSettings:
                         merge_mode = None
                     self._merge_mode = merge_mode
 
+                    merge_backends = data.get('merge_backends', None)
+                    if merge_backends is not None:
+                        # 與 merge_mode 同一套處理：持久化檔案可能損毀或被手動
+                        # 改壞，不能讓運行中的 bot 崩潰，只警告並退回 env 的
+                        # MERGE_BACKENDS（F29 acceptance #4）。驗證規則沿用
+                        # get_backend_chain，不在這裡另抄一份判斷。
+                        from app.services.merge_backends import (
+                            UnsupportedMergeBackendError,
+                            get_backend_chain,
+                        )
+
+                        try:
+                            get_backend_chain(merge_backends)
+                        except UnsupportedMergeBackendError as e:
+                            self._logger.warning(
+                                f"runtime_settings.json 中的 merge_backends="
+                                f"{merge_backends!r} 不合法（{e}），退回 MERGE_BACKENDS 設定值"
+                            )
+                            merge_backends = None
+                    self._merge_backends = merge_backends
+
                     self._logger.info(f"已載入運行時設定: google_maps_list={self._google_maps_list}")
             except Exception as e:
                 self._logger.warning(f"載入運行時設定失敗: {e}")
@@ -228,6 +251,7 @@ class RuntimeSettings:
                 'google_maps_list': self._google_maps_list,
                 'use_auto_mode': self._use_auto_mode,
                 'merge_mode': self._merge_mode,
+                'merge_backends': self._merge_backends,
             }
             with open(self._settings_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -343,6 +367,40 @@ class RuntimeSettings:
         self._merge_mode = mode
         self._save_settings()
         self._logger.info(f"已設定合併模式為: {self._merge_mode}")
+        return True
+
+    @property
+    def merge_backends(self) -> str:
+        """取得目前生效的合併後端鏈（逗號分隔字串）
+
+        優先使用 runtime_settings 的覆寫值，沒有就用 MERGE_BACKENDS 的 env
+        預設值（比照 merge_mode 的既有慣例）。PlaceExtractor 每次 extract()
+        都讀這個 property，不在建構時快取（F29）。
+        """
+        if self._merge_backends is not None:
+            return self._merge_backends
+        return settings.merge_backends
+
+    def set_merge_backends(self, chain: str) -> bool:
+        """設定合併後端鏈（F29）
+
+        Args:
+            chain: 逗號分隔的後端名稱鏈，空白可有可無
+
+        Returns:
+            bool: 是否設定成功；鏈為空或含不支援的名稱回傳 False，
+                現行鏈不變、不落盤
+        """
+        from app.services.merge_backends import UnsupportedMergeBackendError, get_backend_chain
+
+        normalized = ",".join(n.strip() for n in chain.split(",") if n.strip())
+        try:
+            get_backend_chain(normalized)
+        except UnsupportedMergeBackendError:
+            return False
+        self._merge_backends = normalized
+        self._save_settings()
+        self._logger.info(f"已設定合併後端鏈為: {self._merge_backends}")
         return True
 
 
