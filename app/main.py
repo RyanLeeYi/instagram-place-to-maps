@@ -93,6 +93,7 @@ async def lifespan(app: FastAPI):
     bot_app.add_handler(CommandHandler("logout_google", handlers.logout_google_handler))
     bot_app.add_handler(CallbackQueryHandler(handlers.frames_callback_handler, pattern="^frames_"))
     bot_app.add_handler(CallbackQueryHandler(handlers.mergemode_callback_handler, pattern="^mergemode_"))
+    bot_app.add_handler(CallbackQueryHandler(handlers.mergebackends_callback_handler, pattern="^mergebackends_"))
     bot_app.add_handler(CallbackQueryHandler(handlers.savelist_callback_handler, pattern="^savelist_"))
     bot_app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,

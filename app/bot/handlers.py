@@ -563,19 +563,17 @@ class PlaceBotHandlers:
             await update.message.reply_text("未授權的使用者")
             return
 
-        supported = supported_merge_backend_names()
         args = context.args
 
         if not args:
-            message = (
-                f"目前後端鏈：{runtime_settings.merge_backends}\n"
-                f"目前模式：{runtime_settings.merge_mode}\n"
-                f"合法後端名稱：{'、'.join(supported)}"
+            message, reply_markup = self._build_mergebackends_view(
+                runtime_settings.merge_backends, runtime_settings.merge_mode
             )
-            await update.message.reply_text(message)
+            await update.message.reply_text(message, reply_markup=reply_markup)
             return
 
         raw_chain = " ".join(args)
+        supported = supported_merge_backend_names()
 
         if runtime_settings.set_merge_backends(raw_chain):
             await update.message.reply_text(
@@ -586,6 +584,69 @@ class PlaceBotHandlers:
             await update.message.reply_text(
                 "無效的後端鏈\n\n合法後端名稱：" + "、".join(supported)
             )
+
+    def _build_mergebackends_view(self, chain: str, mode: str):
+        """組出 /mergebackends 訊息文字與 inline keyboard（F30）
+
+        無參數回覆與按鈕點擊後的 edit_message_text 都用這個組裝，不各寫一份。
+        每個合法後端一顆按鈕，順序照 SUPPORTED_MERGE_BACKENDS、每列最多 3 顆；
+        目前鏈第一個後端標「(使用中)」。
+        """
+        from app.services.place_extractor import supported_merge_backend_names
+
+        supported = supported_merge_backend_names()
+        current_first = chain.split(",")[0].strip() if chain else ""
+
+        buttons = [
+            InlineKeyboardButton(
+                name + (" (使用中)" if name == current_first else ""),
+                callback_data=f"mergebackends_{name}",
+            )
+            for name in supported
+        ]
+        keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        message = (
+            f"目前後端鏈：{chain}\n"
+            f"目前模式：{mode}\n"
+            f"合法後端名稱：{'、'.join(supported)}\n\n"
+            "點下方按鈕＝把鏈設成「該後端,ollama」（ollama 本身設成單一 ollama）；"
+            "自訂順序或串三家以上仍用文字參數 /mergebackends <a,b,c>"
+        )
+        return message, reply_markup
+
+    async def mergebackends_callback_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """處理 /mergebackends inline keyboard 按鈕點擊（F30）
+
+        一鍵把鏈設成「該後端,ollama」（ollama 本身設成單一 ollama），走
+        runtime_settings.set_merge_backends 同一套驗證與落盤（F29），不另寫
+        一條路徑。callback_data 可被偽造，set_merge_backends 回 False 時
+        （理論上按鈕本身不會產生非法鏈）回錯誤、不改現況。
+        """
+        from app.config import runtime_settings
+
+        query = update.callback_query
+        await query.answer()
+
+        chat_id = update.effective_chat.id
+        if not self._is_authorized(chat_id):
+            await query.edit_message_text("未授權的使用者")
+            return
+
+        if not query.data.startswith("mergebackends_"):
+            return
+
+        backend = query.data.replace("mergebackends_", "")
+        new_chain = backend if backend == "ollama" else f"{backend},ollama"
+
+        if runtime_settings.set_merge_backends(new_chain):
+            message, reply_markup = self._build_mergebackends_view(
+                runtime_settings.merge_backends, runtime_settings.merge_mode
+            )
+            await query.edit_message_text(message, reply_markup=reply_markup)
+        else:
+            await query.edit_message_text("無效的後端鏈")
 
     async def savelist_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """

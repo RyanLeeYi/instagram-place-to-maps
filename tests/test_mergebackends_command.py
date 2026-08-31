@@ -16,6 +16,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
+from telegram import InlineKeyboardMarkup
 
 from app.config import RuntimeSettings, runtime_settings, settings
 from app.bot.handlers import PlaceBotHandlers
@@ -53,9 +54,11 @@ def _bare_handler(authorized=True):
 class _FakeMessage:
     def __init__(self):
         self.replies = []
+        self.reply_markup_seen = None
 
     async def reply_text(self, text, **kwargs):
         self.replies.append(text)
+        self.reply_markup_seen = kwargs.get("reply_markup")
         return SimpleNamespace()
 
 
@@ -64,6 +67,29 @@ def _fake_update_context(args):
     update = SimpleNamespace(message=msg, effective_chat=SimpleNamespace(id=1))
     context = SimpleNamespace(args=args)
     return update, context, msg
+
+
+class _FakeQuery:
+    """記錄 answer() 有沒有被呼叫、edit_message_text 的每次呼叫內容。"""
+
+    def __init__(self, data):
+        self.data = data
+        self.answered = False
+        self.edits = []
+
+    async def answer(self):
+        self.answered = True
+
+    async def edit_message_text(self, text, **kwargs):
+        self.edits.append((text, kwargs))
+        return SimpleNamespace()
+
+
+def _fake_callback_update(data):
+    query = _FakeQuery(data)
+    update = SimpleNamespace(callback_query=query, effective_chat=SimpleNamespace(id=1))
+    context = SimpleNamespace()
+    return update, context, query
 
 
 # --- 合法名稱清單來源是 get_backend 認得的名稱，不是另抄一份 ----------------
@@ -220,3 +246,103 @@ def test_start與help指令表含mergebackends():
     update2, _, help_msg = _fake_update_context([])
     asyncio.run(h.help_handler(update2, None))
     assert "/mergebackends" in help_msg.replies[-1]
+
+
+# --- F30：/mergebackends 無參數回覆加 inline keyboard -----------------------
+# acceptance (1)：按鈕清單來源、順序、每列數量、使用中標記
+
+
+def test_按鈕清單與SUPPORTED_MERGE_BACKENDS一致順序不漂移且每列最多3顆():
+    h = _bare_handler()
+
+    _, reply_markup = h._build_mergebackends_view("ollama", "failover")
+
+    names_in_order = [
+        button.callback_data.replace("mergebackends_", "")
+        for row in reply_markup.inline_keyboard
+        for button in row
+    ]
+    assert names_in_order == list(supported_merge_backend_names())
+    assert all(len(row) <= 3 for row in reply_markup.inline_keyboard)
+
+    first_button = reply_markup.inline_keyboard[0][0]
+    assert "(使用中)" in first_button.text, "目前鏈第一個後端要標使用中"
+
+
+def test_無參數回覆帶按鈕(tmp_path, monkeypatch):
+    _reset_runtime_settings(tmp_path, monkeypatch)
+    monkeypatch.setattr(runtime_settings, "_merge_backends", "claude,ollama")
+
+    h = _bare_handler()
+    update, context, msg = _fake_update_context([])
+    asyncio.run(h.mergebackends_handler(update, context))
+
+    assert msg.reply_markup_seen, "無參數回覆要帶 inline keyboard"
+    all_buttons = [b for row in msg.reply_markup_seen.inline_keyboard for b in row]
+    claude_button = next(b for b in all_buttons if b.callback_data == "mergebackends_claude")
+    assert "(使用中)" in claude_button.text
+
+
+# acceptance (2)：點按鈕＝把鏈設成「該後端,ollama」（ollama 例外），走
+# set_merge_backends 同一套驗證與落盤，並用 edit_message_text 更新同一則訊息
+
+
+def test_點claude後鏈變成claude逗號ollama並更新訊息與按鈕(tmp_path, monkeypatch):
+    _reset_runtime_settings(tmp_path, monkeypatch)
+    monkeypatch.setattr(runtime_settings, "_merge_backends", "ollama")
+
+    h = _bare_handler()
+    update, context, query = _fake_callback_update("mergebackends_claude")
+    asyncio.run(h.mergebackends_callback_handler(update, context))
+
+    assert query.answered
+    assert runtime_settings.merge_backends == "claude,ollama"
+    assert query.edits
+    text, kwargs = query.edits[-1]
+    assert "claude,ollama" in text
+    assert isinstance(kwargs.get("reply_markup"), InlineKeyboardMarkup)
+
+
+def test_點ollama後鏈為單一ollama(tmp_path, monkeypatch):
+    _reset_runtime_settings(tmp_path, monkeypatch)
+    monkeypatch.setattr(runtime_settings, "_merge_backends", "claude,ollama")
+
+    h = _bare_handler()
+    update, context, query = _fake_callback_update("mergebackends_ollama")
+    asyncio.run(h.mergebackends_callback_handler(update, context))
+
+    assert runtime_settings.merge_backends == "ollama"
+    text, _ = query.edits[-1]
+    assert "目前後端鏈：ollama" in text
+
+
+# acceptance (4)：callback 走 _is_authorized 同一套，未授權不改鏈
+
+
+def test_未授權callback回未授權且不改鏈(tmp_path, monkeypatch):
+    _reset_runtime_settings(tmp_path, monkeypatch)
+    monkeypatch.setattr(runtime_settings, "_merge_backends", "ollama")
+
+    h = _bare_handler(authorized=False)
+    update, context, query = _fake_callback_update("mergebackends_claude")
+    asyncio.run(h.mergebackends_callback_handler(update, context))
+
+    assert query.edits == [("未授權的使用者", {})]
+    assert runtime_settings.merge_backends == "ollama"
+
+
+# acceptance (5)：callback_data 被偽造成不支援的名稱，set_merge_backends 回
+# False 時回錯誤、不改現況
+
+
+def test_偽造名稱callback不改鏈且回錯誤(tmp_path, monkeypatch):
+    _reset_runtime_settings(tmp_path, monkeypatch)
+    monkeypatch.setattr(runtime_settings, "_merge_backends", "ollama")
+
+    h = _bare_handler()
+    update, context, query = _fake_callback_update("mergebackends_gemini")
+    asyncio.run(h.mergebackends_callback_handler(update, context))
+
+    assert runtime_settings.merge_backends == "ollama"
+    text, _ = query.edits[-1]
+    assert "無效" in text
