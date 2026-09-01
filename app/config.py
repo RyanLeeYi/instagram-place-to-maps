@@ -74,6 +74,43 @@ class Settings(BaseSettings):
     claude_command: str = Field(default="claude", env="CLAUDE_COMMAND")
     codex_command: str = Field(default="codex", env="CODEX_COMMAND")
 
+    # F27.4：兩個 SDK 版後端（claude-api／codex-api）的 API key。
+    # 留空＝停用該後端：merge() 以 MergeFailure「未設定 <ENV名>」呈現，鏈照常
+    # 降級，啟動不炸（與 CLI 版「找不到執行檔」同一種降級形狀）。這兩個欄位
+    # 只在這裡讀 env，其他模組一律經 settings 取用，不得自己碰 os.environ。
+    # Gemini 沒有 SDK 版後端（2026-08-28 決議，見 merge_sdk_backends.py）；
+    # 影片理解那格用的 AGY_COMMAND 走訂閱 CLI，與這裡的 API key 無關。
+    anthropic_api_key: str = Field(default="", env="ANTHROPIC_API_KEY")
+    openai_api_key: str = Field(default="", env="OPENAI_API_KEY")
+
+    # SDK 版後端共用逾時（秒）與各自的模型名稱。逾時同時交給 SDK client 與
+    # asyncio.wait_for 兩層——SDK 的逾時語意各家不同（連線／讀取／整體），
+    # 外層 wait_for 才是「這次合併最多花多久」的唯一保證。
+    merge_sdk_timeout: int = Field(default=240, env="MERGE_SDK_TIMEOUT")
+    anthropic_api_model: str = Field(
+        default="claude-sonnet-4-5-20250929", env="ANTHROPIC_API_MODEL"
+    )
+    openai_api_model: str = Field(default="gpt-4.1-mini", env="OPENAI_API_MODEL")
+    # 合併輸出是結構化 JSON，長度隨地點數量成長；給足上限避免被截斷成壞 JSON。
+    merge_sdk_max_tokens: int = Field(default=4096, env="MERGE_SDK_MAX_TOKENS")
+
+    @property
+    def api_key_values(self) -> List[str]:
+        """所有已設定的 API key 值，供 log／例外訊息遮蔽使用（F27.4 acceptance #1）。
+
+        mission-control F53 的前例是例外訊息帶著含 token 的 URL 被原樣存下再送出。
+        這裡集中一份「哪些字串絕對不能出現在對外文字裡」，遮蔽端不必各自知道
+        有哪幾把 key。
+        """
+        return [
+            key
+            for key in (
+                self.anthropic_api_key,
+                self.openai_api_key,
+            )
+            if key
+        ]
+
     @property
     def allowed_chat_ids(self) -> List[str]:
         """解析允許的 chat_id 列表"""

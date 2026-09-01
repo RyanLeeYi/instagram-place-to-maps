@@ -4,7 +4,7 @@
       "id": "F27",
       "name": "合併階段可插拔後端（envelope）",
       "prerequisites": [],
-      "acceptance": "【envelope，不直接驗收，由底下 slice 逐一送審】\noutcome：合併階段的模型後端可插拔，支援 agy / claude / codex / ollama 四家，每家可用 CLI（訂閱）或 SDK（API key）認證，執行模式支援「依序備援」與「同時投票」且由使用者切換。\nnon-goals：不動讀影片那一格（仍是 agy CLI，已查證 antigravity-sdk-python 只吃 API key、不沿用訂閱憑證，結構上沒有替代品）；不動 _reconcile 的判定規則；不改 F22 的兩個回歸案例標準。\n共用限制：預設後端必須是 ollama，零金鑰狀態下整條線要能跑完；任何後端缺金鑰或不可用時自動降級，不得中斷；兩個既有回歸案例在每個 slice 之後都必須維持各 3/3。\nslice：F27.1 抽介面並搬遷 ollama（行為不變）→ F27.2 兩種執行模式與切換 → F27.3 三家 CLI 版後端 → F27.4 三家 SDK 版與金鑰管理。\nenvelope 簽核不等於四個 slice 都獲准動工；之後每輪只審下一個可執行的 slice。",
+      "acceptance": "【envelope，不直接驗收，由底下 slice 逐一送審】\noutcome：合併階段的模型後端可插拔，支援 agy / claude / codex / ollama 四家；claude 與 codex 兩家可用 CLI（訂閱）或 SDK（API key）認證，agy 只有 CLI（2026-08-28 決議砍掉 agy-api，理由見 F27.4），ollama 走本地。執行模式支援「依序備援」與「同時投票」且由使用者切換。\nnon-goals：不動讀影片那一格（仍是 agy CLI，已查證 antigravity-sdk-python 只吃 API key、不沿用訂閱憑證，結構上沒有替代品）；不動 _reconcile 的判定規則；不改 F22 的兩個回歸案例標準。\n共用限制：預設後端必須是 ollama，零金鑰狀態下整條線要能跑完；任何後端缺金鑰或不可用時自動降級，不得中斷；兩個既有回歸案例在每個 slice 之後都必須維持各 3/3。\nslice：F27.1 抽介面並搬遷 ollama（行為不變）→ F27.2 兩種執行模式與切換 → F27.3 三家 CLI 版後端 → F27.4 兩家 SDK 版與金鑰管理。\nenvelope 簽核不等於四個 slice 都獲准動工；之後每輪只審下一個可執行的 slice。",
       "status": "failing",
       "evidence": null,
       "signed_off": true,
@@ -19,12 +19,12 @@
     },
     {
       "id": "F27.4",
-      "name": "三家 SDK 版後端與金鑰管理（API key 認證）",
+      "name": "兩家 SDK 版後端與金鑰管理（API key 認證）",
       "prerequisites": [
         "F27",
         "F27.3"
       ],
-      "acceptance": "【scope】三家 SDK 版後端與金鑰管理。名稱 agy-api / claude-api / codex-api，對應 antigravity-sdk-python（GEMINI_API_KEY）、anthropic（ANTHROPIC_API_KEY）、openai（OPENAI_API_KEY）。不動讀影片那格、_reconcile、F22 案例標準。\n1. config.py 新增三個 key 欄位（唯一 env 入口），留空＝停用該後端：merge() 以 MergeFailure「未設定 <ENV名>」呈現，鏈照常降級，啟動不炸。log 與例外訊息不得洩漏 key 內容（mission-control F53 前例：例外訊息帶含 token 的 URL 被存下再送出）。\n2. get_backend 認得三個 -api 名稱；.env.example 註明各 key 用途與留空行為。\n3. requirements.txt 釘版新增三個 SDK；init.ps1 走同一 pip install，不另外改。\n4. 呼叫帶逾時；401 / 429 / 5xx / 逾時一律收斂成 MergeFailure 且 notes 可讀。\n5. JSON 內容解析共用 F27.3 抽出的那份，不得複製。\n6. 單元測試：三後端各以假 client 涵蓋成功、缺 key、API 錯誤、JSON 壞掉；不打真 API。\n7. 真 API 冒煙：有 key 的家實跑一次並貼輸出；沒 key 的標未驗並記 handoff，不擋收官（現況 .env 三把 key 都沒有，預期全標未驗）。\n8. 回歸：pytest 只增不減；f22_regression.py 兩案例各 3/3。\n9. rollback：單一 commit，revert 後回到基準。\n10. 停止條件：同一阻塞失敗兩次即停；fix/reverify 上限 3 輪。",
+      "acceptance": "【scope】兩家 SDK 版後端與金鑰管理。名稱 claude-api / codex-api，對應 anthropic（ANTHROPIC_API_KEY）、openai（OPENAI_API_KEY）。（2026-08-28 依 brief-me 裁示 3d5f020a 由三家縮成兩家並重新簽核：agy-api 點名的 antigravity-sdk-python 在 PyPI 上發行名是 google-antigravity，相依鏈拉進 starlette 1.x，與釘住的 fastapi 0.115（要求 starlette<0.39）硬衝；退一步的 google-genai 也要動 pydantic／httpx 釘版。合併階段要用 Gemini 就走 F27.3 的 agy CLI。）不動讀影片那格、_reconcile、F22 案例標準。\n1. config.py 新增兩個 key 欄位（唯一 env 入口），留空＝停用該後端：merge() 以 MergeFailure「未設定 <ENV名>」呈現，鏈照常降級，啟動不炸。log 與例外訊息不得洩漏 key 內容（mission-control F53 前例：例外訊息帶含 token 的 URL 被存下再送出）。\n2. get_backend 認得兩個 -api 名稱，且 agy-api 已無可用路徑（後端類別、get_backend 分支、config 的 GEMINI_API_KEY／GEMINI_API_MODEL 欄位、.env.example 條目、requirements.txt 釘版與測試全部移除；說明「為什麼沒有它」的註解可以留），get_backend('agy-api') 丟 UnsupportedMergeBackendError；.env.example 註明各 key 用途與留空行為。\n3. requirements.txt 釘版新增兩個 SDK；init.ps1 走同一 pip install，不另外改。\n4. 呼叫帶逾時；401 / 429 / 5xx / 逾時一律收斂成 MergeFailure 且 notes 可讀。\n5. JSON 內容解析共用 F27.3 抽出的那份，不得複製。\n6. 單元測試：兩後端各以假 client 涵蓋成功、缺 key、API 錯誤、JSON 壞掉；不打真 API。\n7. 真 API 冒煙：有 key 的家實跑一次並貼輸出；沒 key 的標未驗並記 handoff，不擋收官（現況 .env 兩把 key 都沒有，預期全標未驗）。\n8. 回歸：pytest 總數不得低於 F27.4 動工前的基準 188 passed / 2 skipped（砍 agy-api 必然帶走一批 F27.4 自己新增的測試，這是裁示的直接後果，不算回歸）；f22_regression.py 兩案例各 3/3。\n9. rollback：單一 commit，revert 後回到基準。\n10. 停止條件：同一阻塞失敗兩次即停；fix/reverify 上限 3 輪。",
       "status": "failing",
       "evidence": null,
       "signed_off": true,

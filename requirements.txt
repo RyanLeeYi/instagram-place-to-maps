@@ -41,6 +41,13 @@ httpx==0.27.0
 # Browser Automation
 playwright>=1.40.0
 
+# 合併階段的 SDK 版後端（F27.4）。留空 API key 就不會被建構，裝著不影響行為。
+anthropic==1.1.0
+openai==3.5.0
+# Gemini 沒有 SDK 版後端（2026-08-28 決議）：google-antigravity 拉進 starlette 1.x，
+# 與 fastapi==0.115.0 要求的 starlette<0.39 硬衝；google-genai 則要動 pydantic 與
+# httpx 釘版。合併階段要用 Gemini 走 F27.3 的 agy CLI。
+
 # 開發依賴
 pytest>=8.0.0
 

@@ -126,11 +126,15 @@ class UnsupportedMergeModeError(ValueError):
 
 
 def get_backend(name: str) -> MergeBackend:
-    """依名稱建立單一後端：ollama（本地）或 agy／claude／codex（訂閱 CLI）。
+    """依名稱建立單一後端。
 
-    給其他值在這裡就明確報錯，不靜默 fallback。CLI 後端的 import 放在
-    函式內部——merge_cli_backends.py 反向 import 這個模組的
-    `MergeFailure`／`parse_merge_response`，模組層級互相 import 會循環。
+    三組：ollama（本地）、agy／claude／codex（訂閱 CLI，F27.3）、
+    claude-api／codex-api（API key SDK，F27.4；Gemini 沒有 SDK 版，見
+    merge_sdk_backends.py 的模組 docstring）。
+
+    給其他值在這裡就明確報錯，不靜默 fallback。兩個後端模組的 import 都放在
+    函式內部——它們反向 import 這個模組的 `MergeFailure`／`parse_merge_response`，
+    模組層級互相 import 會循環。
     """
     if name == "ollama":
         return OllamaMergeBackend()
@@ -145,8 +149,18 @@ def get_backend(name: str) -> MergeBackend:
             "claude": ClaudeMergeBackend,
             "codex": CodexMergeBackend,
         }[name]()
+    if name in ("claude-api", "codex-api"):
+        from app.services.merge_sdk_backends import (
+            ClaudeApiMergeBackend,
+            CodexApiMergeBackend,
+        )
+        return {
+            "claude-api": ClaudeApiMergeBackend,
+            "codex-api": CodexApiMergeBackend,
+        }[name]()
     raise UnsupportedMergeBackendError(
-        f"不支援的合併後端 {name!r}；目前支援 'ollama'、'agy'、'claude'、'codex'"
+        f"不支援的合併後端 {name!r}；目前支援 'ollama'、'agy'、'claude'、'codex'、"
+        f"'claude-api'、'codex-api'"
     )
 
 

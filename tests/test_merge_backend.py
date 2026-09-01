@@ -8,12 +8,17 @@ F27.2：合併階段從「單一後端」改成「一條後端鏈 + 一種執行
 （failover / vote）。測試注入接縫也從 `extractor._backend`（單一物件）
 改成 `extractor._backends`（list）——F27.1 留下的三處注入（原第 54、135、
 157 行）在這裡一併改寫。
+
+F27.3／F27.4：CLI 版與 SDK 版各三家後端。兩者的假替身層級不同——CLI 版換掉
+subprocess，SDK 版換掉 client 物件——但共用同一條規則：測試不得建立真的
+client、不得打真 API，這件事由 `_sdk_backend()` 裡的地雷斷言釘住。
 """
 import asyncio
 import json
 import logging
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -36,6 +41,10 @@ from app.services.merge_cli_backends import (
     AgyMergeBackend,
     ClaudeMergeBackend,
     CodexMergeBackend,
+)
+from app.services.merge_sdk_backends import (
+    ClaudeApiMergeBackend,
+    CodexApiMergeBackend,
 )
 from app.services.place_extractor import ExtractionResult, PlaceExtractor
 
@@ -785,3 +794,243 @@ def test_codex_內層JSON壞掉時轉MergeFailure(monkeypatch):
 
     with pytest.raises(MergeFailure):
         asyncio.run(CodexMergeBackend().merge("prompt"))
+
+
+# --- F27.4：SDK 版合併後端 claude-api／codex-api（acceptance #1-#6） ---------
+#
+# 兩家都用假 client 注入 `backend._client`，因此 `_build_client()` 不會執行、
+# 沒裝的 SDK 不影響測試、也永遠打不到真 API（acceptance #6）。
+
+
+class _FakeSdkCall:
+    """假的 SDK 呼叫：記錄參數，回傳預備好的結果、或延遲、或丟預備好的例外。"""
+
+    def __init__(self, result=None, exc=None, delay=0.0):
+        self._result = result
+        self._exc = exc
+        self._delay = delay
+        self.calls = []
+
+    async def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        if self._exc:
+            raise self._exc
+        return self._result
+
+
+class _FakeApiError(Exception):
+    """帶 status_code 的假 SDK 錯誤。
+
+    刻意不繼承 anthropic／openai 的錯誤類別：產品程式是用鴨子型別讀
+    `status_code`，測試跟著用鴨子型別，才不會在 SDK 換版時一起壞掉。
+    """
+
+    def __init__(self, status_code, message):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _make_claude_client(text=None, exc=None, delay=0.0):
+    call = _FakeSdkCall(SimpleNamespace(content=[SimpleNamespace(text=text)]), exc, delay)
+    client = SimpleNamespace(messages=SimpleNamespace(create=call))
+    return client, call
+
+
+def _make_codex_client(text=None, exc=None, delay=0.0):
+    call = _FakeSdkCall(
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))]),
+        exc,
+        delay,
+    )
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=call)))
+    return client, call
+
+
+# (後端類別, settings 上的 key 欄位, 對應的 ENV 名, 假 client 工廠)
+_SDK_CASES = [
+    (ClaudeApiMergeBackend, "anthropic_api_key", "ANTHROPIC_API_KEY", _make_claude_client),
+    (CodexApiMergeBackend, "openai_api_key", "OPENAI_API_KEY", _make_codex_client),
+]
+_SDK_IDS = [case[0].name for case in _SDK_CASES]
+
+_FAKE_KEY = "sk-test-DO-NOT-LEAK-0123456789"
+
+
+def _sdk_backend(cls, key_attr, monkeypatch, client=None, key=_FAKE_KEY):
+    """建一個 SDK 後端：設好 key、注入假 client、並把 _build_client 換成地雷。
+
+    地雷那步是重點——它把「測試不打真 API」從口頭約定變成會紅的斷言
+    （acceptance #6）。
+    """
+    for _, attr, _, _ in _SDK_CASES:
+        monkeypatch.setattr(settings, attr, "")
+    monkeypatch.setattr(settings, key_attr, key)
+
+    def _land_mine(*args, **kwargs):
+        raise AssertionError("測試不得建立真的 SDK client")
+
+    monkeypatch.setattr(cls, "_build_client", _land_mine)
+
+    backend = cls()
+    backend._client = client
+    return backend
+
+
+def test_get_backend認得兩個api名稱():
+    """acceptance #2。"""
+    assert isinstance(get_backend("claude-api"), ClaudeApiMergeBackend)
+    assert isinstance(get_backend("codex-api"), CodexApiMergeBackend)
+
+
+@pytest.mark.parametrize("name", ["agy-api", "gemini-api"])
+def test_未知的api名稱仍照舊丟UnsupportedMergeBackendError(name):
+    """acceptance #2：agy-api 在 2026-08-28 被砍掉，要跟其他不認得的名字一樣明確報錯。"""
+    with pytest.raises(UnsupportedMergeBackendError):
+        get_backend(name)
+
+
+@pytest.mark.parametrize("cls,key_attr,env_name,make", _SDK_CASES, ids=_SDK_IDS)
+def test_sdk後端成功時解析地點(monkeypatch, cls, key_attr, env_name, make):
+    """acceptance #6：成功路徑。"""
+    payload = json.dumps(
+        {"found": True, "places": [{"name": "測試店", "confidence": "high"}]},
+        ensure_ascii=False,
+    )
+    client, call = make(text=payload)
+    backend = _sdk_backend(cls, key_attr, monkeypatch, client)
+
+    places = asyncio.run(backend.merge("prompt"))
+
+    assert [p.name for p in places] == ["測試店"]
+    assert call.calls, "沒有真的呼叫到 SDK"
+
+
+@pytest.mark.parametrize("cls,key_attr,env_name,make", _SDK_CASES, ids=_SDK_IDS)
+def test_sdk後端缺key時以未設定ENV名的MergeFailure呈現(monkeypatch, cls, key_attr, env_name, make):
+    """acceptance #1：留空＝停用；連 client 都不該碰，啟動與鏈都不受影響。"""
+    client, call = make(text='{"found": true, "places": [{"name": "不該被叫到"}]}')
+    backend = _sdk_backend(cls, key_attr, monkeypatch, client, key="")
+
+    with pytest.raises(MergeFailure) as e:
+        asyncio.run(backend.merge("prompt"))
+
+    assert "未設定" in e.value.notes
+    assert env_name in e.value.notes
+    assert call.calls == [], "缺 key 時不該呼叫 SDK"
+
+
+@pytest.mark.parametrize("cls,key_attr,env_name,make", _SDK_CASES, ids=_SDK_IDS)
+@pytest.mark.parametrize("status,expect", [(401, "認證失敗"), (429, "速率限制"), (503, "伺服器錯誤")])
+def test_sdk後端API錯誤收斂成MergeFailure且notes可讀(
+    monkeypatch, cls, key_attr, env_name, make, status, expect
+):
+    """acceptance #4：401／429／5xx 都變成看得懂的 MergeFailure，不外流成別的例外。"""
+    client, _ = make(exc=_FakeApiError(status, "upstream said no"))
+    backend = _sdk_backend(cls, key_attr, monkeypatch, client)
+
+    with pytest.raises(MergeFailure) as e:
+        asyncio.run(backend.merge("prompt"))
+
+    assert expect in e.value.notes
+    assert str(status) in e.value.notes
+    assert cls.name in e.value.notes
+
+
+@pytest.mark.parametrize("cls,key_attr,env_name,make", _SDK_CASES, ids=_SDK_IDS)
+def test_sdk後端逾時收斂成MergeFailure(monkeypatch, cls, key_attr, env_name, make):
+    """acceptance #4：呼叫帶逾時。外層 wait_for 是唯一的總時長保證。"""
+    client, _ = make(text="{}", delay=999)
+    backend = _sdk_backend(cls, key_attr, monkeypatch, client)
+    monkeypatch.setattr(settings, "merge_sdk_timeout", 0.05)
+
+    with pytest.raises(MergeFailure) as e:
+        asyncio.run(backend.merge("prompt"))
+
+    assert "逾時" in e.value.notes
+    assert cls.name in e.value.notes
+
+
+@pytest.mark.parametrize("cls,key_attr,env_name,make", _SDK_CASES, ids=_SDK_IDS)
+def test_sdk後端內層JSON壞掉時轉MergeFailure(monkeypatch, cls, key_attr, env_name, make):
+    """acceptance #6：內層 JSON 壞掉。"""
+    client, _ = make(text="這裡完全沒有 JSON")
+    backend = _sdk_backend(cls, key_attr, monkeypatch, client)
+
+    with pytest.raises(MergeFailure):
+        asyncio.run(backend.merge("prompt"))
+
+
+@pytest.mark.parametrize("cls,key_attr,env_name,make", _SDK_CASES, ids=_SDK_IDS)
+def test_sdk後端回應沒有文字內容時轉MergeFailure(monkeypatch, cls, key_attr, env_name, make):
+    """空回應不能被當成「解析失敗」以外的東西默默吞掉。"""
+    client, _ = make(text=None)
+    backend = _sdk_backend(cls, key_attr, monkeypatch, client)
+
+    with pytest.raises(MergeFailure) as e:
+        asyncio.run(backend.merge("prompt"))
+
+    assert "沒有文字內容" in e.value.notes
+
+
+@pytest.mark.parametrize("cls,key_attr,env_name,make", _SDK_CASES, ids=_SDK_IDS)
+def test_sdk後端的例外訊息與log都不洩漏key內容(
+    monkeypatch, cls, key_attr, env_name, make, caplog
+):
+    """acceptance #1：mission-control F53 的前例——含 token 的訊息被原樣存下再送出。
+
+    這裡刻意讓 SDK 例外訊息「就是」夾帶 key（真實情境：SDK 把請求細節塞進
+    訊息），驗證 notes 與 log 兩條對外通道都被遮蔽。
+    """
+    leaky = f"auth failed for key={_FAKE_KEY} at https://api.example/v1"
+    client, _ = make(exc=_FakeApiError(401, leaky))
+    backend = _sdk_backend(cls, key_attr, monkeypatch, client)
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(MergeFailure) as e:
+            asyncio.run(backend.merge("prompt"))
+
+    assert _FAKE_KEY not in e.value.notes
+    assert "***" in e.value.notes
+    assert _FAKE_KEY not in caplog.text
+
+
+def test_sdk後端共用parse_merge_response而非自己複製一份(monkeypatch):
+    """acceptance #5：解析走同一份，所以 F28 的 schema 漂移救援對 SDK 後端同樣有效。
+
+    自創頂層鍵、沒有 found——只有共用的那份解析救得回來；複製一份簡化版
+    的實作會在這裡紅。
+    """
+    drifted = json.dumps({"推荐店家": [{"name": "漂移店"}]}, ensure_ascii=False)
+    client, _ = _make_claude_client(text=drifted)
+    backend = _sdk_backend(ClaudeApiMergeBackend, "anthropic_api_key", monkeypatch, client)
+
+    places = asyncio.run(backend.merge("prompt"))
+
+    assert [p.name for p in places] == ["漂移店"]
+
+
+def test_兩家key全留空時鏈逐一降級且notes列出兩個ENV名(monkeypatch):
+    """acceptance #1 的鏈層行為：零金鑰狀態下不中斷，全敗的 notes 說得出原因。"""
+    for _, attr, _, _ in _SDK_CASES:
+        monkeypatch.setattr(settings, attr, "")
+    backends = [get_backend(n) for n in ("claude-api", "codex-api")]
+
+    with pytest.raises(MergeFailure) as e:
+        asyncio.run(merge_with_backends(backends, "prompt", "failover"))
+
+    for _, _, env_name, _ in _SDK_CASES:
+        assert env_name in e.value.notes
+
+
+def test_零金鑰時ollama仍能接手_sdk後端不中斷鏈(monkeypatch):
+    """F27 envelope 的共用限制：任何後端缺金鑰都自動降級，不得中斷。"""
+    for _, attr, _, _ in _SDK_CASES:
+        monkeypatch.setattr(settings, attr, "")
+    chain = [get_backend("claude-api"), FakeMergeBackend([PlaceInfo(name="本地救援")], name="ollama")]
+
+    places, note = asyncio.run(merge_with_backends(chain, "prompt", "failover"))
+
+    assert [p.name for p in places] == ["本地救援"]
+    assert note == "採用後端：ollama"
