@@ -6,7 +6,7 @@ import re
 from typing import Optional, Set
 
 from telegram import Update, Message, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import TimedOut, NetworkError
+from telegram.error import TimedOut, NetworkError, BadRequest
 from telegram.ext import ContextTypes
 
 from app.config import settings
@@ -402,6 +402,22 @@ class PlaceBotHandlers:
                 parse_mode="Markdown"
             )
     
+    async def _edit_or_ignore_unchanged(self, query, text, **kwargs):
+        """edit_message_text 包一層，只吞「內容沒變」這一種 BadRequest（F31）
+
+        frames／mergemode／mergebackends 三個 inline keyboard callback 連點同一顆
+        按鈕時，新舊訊息與 reply_markup 完全相同，Telegram 回
+        BadRequest("Message is not modified")。那不是錯誤——使用者看到的已經是最新
+        狀態，設定也已經套用；不接住只會讓全域 error_handler 記一筆假錯誤。
+        其他 BadRequest（訊息太長、parse_mode 壞掉…）照樣往上拋。
+        """
+        try:
+            await query.edit_message_text(text, **kwargs)
+        except BadRequest as e:
+            if "not modified" not in str(e).lower():
+                raise
+            logger.debug("edit_message_text 內容未變，忽略：%s", e)
+
     async def frames_callback_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """處理 /frames inline keyboard 按鈕點擊"""
         from app.config import runtime_settings
@@ -411,7 +427,7 @@ class PlaceBotHandlers:
         
         chat_id = update.effective_chat.id
         if not self._is_authorized(chat_id):
-            await query.edit_message_text("❌ 未授權的使用者")
+            await self._edit_or_ignore_unchanged(query, "❌ 未授權的使用者")
             return
         
         # 解析 callback data: "frames_auto", "frames_fast", etc.
@@ -449,9 +465,9 @@ class PlaceBotHandlers:
 
 ✅ 已切換至 *{current_mode}* 模式"""
             
-            await query.edit_message_text(message, parse_mode="MarkdownV2", reply_markup=reply_markup)
+            await self._edit_or_ignore_unchanged(query, message, parse_mode="MarkdownV2", reply_markup=reply_markup)
         else:
-            await query.edit_message_text("❌ 切換失敗")
+            await self._edit_or_ignore_unchanged(query, "❌ 切換失敗")
     
     async def mergemode_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -514,7 +530,7 @@ class PlaceBotHandlers:
 
         chat_id = update.effective_chat.id
         if not self._is_authorized(chat_id):
-            await query.edit_message_text("未授權的使用者")
+            await self._edit_or_ignore_unchanged(query, "未授權的使用者")
             return
 
         if not query.data.startswith("mergemode_"):
@@ -538,9 +554,9 @@ class PlaceBotHandlers:
 
 已切換至 *{mode}* 模式"""
 
-            await query.edit_message_text(message, parse_mode="MarkdownV2", reply_markup=reply_markup)
+            await self._edit_or_ignore_unchanged(query, message, parse_mode="MarkdownV2", reply_markup=reply_markup)
         else:
-            await query.edit_message_text("切換失敗")
+            await self._edit_or_ignore_unchanged(query, "切換失敗")
 
     async def mergebackends_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -636,7 +652,7 @@ class PlaceBotHandlers:
 
         chat_id = update.effective_chat.id
         if not self._is_authorized(chat_id):
-            await query.edit_message_text("未授權的使用者")
+            await self._edit_or_ignore_unchanged(query, "未授權的使用者")
             return
 
         if not query.data.startswith("mergebackends_"):
@@ -649,9 +665,9 @@ class PlaceBotHandlers:
             message, reply_markup = self._build_mergebackends_view(
                 runtime_settings.merge_backends, runtime_settings.merge_mode
             )
-            await query.edit_message_text(message, reply_markup=reply_markup)
+            await self._edit_or_ignore_unchanged(query, message, reply_markup=reply_markup)
         else:
-            await query.edit_message_text("無效的後端鏈")
+            await self._edit_or_ignore_unchanged(query, "無效的後端鏈")
 
     async def savelist_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """

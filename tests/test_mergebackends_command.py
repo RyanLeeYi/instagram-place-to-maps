@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 from telegram import InlineKeyboardMarkup
+from telegram.error import BadRequest
 
 from app.config import RuntimeSettings, runtime_settings, settings
 from app.bot.handlers import PlaceBotHandlers
@@ -377,3 +378,68 @@ def test_建構時已有runtime覆寫鏈則首次extract不重建(tmp_path, monk
     assert len(build_calls) == n, "鏈沒變，第一次 extract() 不該重建"
     assert injected.calls, "注入的後端必須真的被呼叫"
     monkeypatch.setattr(pe, "get_backend_chain", real)
+# --- F31：連點同一顆按鈕時 edit_message_text 的 "Message is not modified" ------
+#
+# 三個 callback handler（frames／mergemode／mergebackends）共用
+# PlaceBotHandlers._edit_or_ignore_unchanged，只吞這一種 BadRequest。
+
+
+class _NotModifiedQuery(_FakeQuery):
+    """模擬 Telegram：新訊息內容與 reply_markup 與上一次完全相同時回 BadRequest。"""
+
+    _last_key = None
+
+    async def edit_message_text(self, text, **kwargs):
+        key = (text, kwargs.get("parse_mode"), kwargs.get("reply_markup"))
+        if self._last_key == key:
+            raise BadRequest(
+                "Message is not modified: specified new message content and reply markup "
+                "are exactly the same as a current content and reply markup of the message"
+            )
+        self._last_key = key
+        self.edits.append((text, kwargs))
+        return SimpleNamespace()
+
+
+def _callback_pair(data):
+    query = _NotModifiedQuery(data)
+    update = SimpleNamespace(callback_query=query, effective_chat=SimpleNamespace(id=1))
+    return update, SimpleNamespace(), query
+
+
+@pytest.mark.parametrize(
+    "handler_name,data,read_state",
+    [
+        ("frames_callback_handler", "frames_fast",
+         lambda rs: (rs.use_auto_mode, rs.frame_interval_seconds)),
+        ("mergemode_callback_handler", "mergemode_vote", lambda rs: rs.merge_mode),
+        ("mergebackends_callback_handler", "mergebackends_claude", lambda rs: rs.merge_backends),
+    ],
+)
+def test_連點同一顆按鈕不拋not_modified且狀態不變(handler_name, data, read_state, tmp_path, monkeypatch):
+    _reset_runtime_settings(tmp_path, monkeypatch)
+    handler = getattr(_bare_handler(), handler_name)
+    update, context, query = _callback_pair(data)
+
+    asyncio.run(handler(update, context))
+    assert query.edits, "第一次點擊必須真的改到訊息"
+    after_first = read_state(runtime_settings)
+
+    asyncio.run(handler(update, context))  # 連點同一顆，Telegram 回 not modified
+
+    assert read_state(runtime_settings) == after_first, "第二次點擊不得改動 runtime 狀態"
+    assert len(query.edits) == 1, "內容沒變時不該記到第二次成功編輯"
+
+
+def test_其他BadRequest仍然往上拋(tmp_path, monkeypatch):
+    _reset_runtime_settings(tmp_path, monkeypatch)
+
+    class _BoomQuery(_FakeQuery):
+        async def edit_message_text(self, text, **kwargs):
+            raise BadRequest("Message text is empty")
+
+    query = _BoomQuery("mergebackends_ollama")
+    update = SimpleNamespace(callback_query=query, effective_chat=SimpleNamespace(id=1))
+
+    with pytest.raises(BadRequest):
+        asyncio.run(_bare_handler().mergebackends_callback_handler(update, SimpleNamespace()))
